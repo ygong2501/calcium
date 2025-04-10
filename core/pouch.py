@@ -247,7 +247,7 @@ class Pouch:
             warnings.warn(f"Simulation error: {str(e)}")
             raise
     
-    def generate_image(self, time_step, output_path=None, with_border=False, colormap='viridis'):
+    def generate_image(self, time_step, output_path=None, with_border=False, colormap='gray'):
         """
         Generate single-frame image.
         
@@ -351,7 +351,7 @@ class Pouch:
             skip_frames (int): Number of frames to skip between each animation frame.
         """
         # This version is similar to the original but outputs to a standard size
-        colormap = plt.cm.viridis
+        colormap = plt.cm.gray
         normalize = matplotlib.colors.Normalize(
             vmin=np.min(self.disc_dynamics[:, 0, :]), 
             vmax=max(np.max(self.disc_dynamics[:, 0, :]), 1)

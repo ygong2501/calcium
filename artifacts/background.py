@@ -93,19 +93,17 @@ def add_cell_spontaneous_luminescence(image, cells_mask, intensity_range=(0.05, 
         
         # Add luminescence to this cell
         if len(image.shape) == 3:
-            # For RGB images, add primarily to green channel (index 1) for calcium
-            green_factor = 1.0
-            red_factor = 0.3
-            blue_factor = 0.3
+            # For RGB images, add equal amounts to all channels for grayscale appearance
+            factor = 1.0
             
             result[:, :, 0][cell_mask] = np.clip(
-                result[:, :, 0][cell_mask] + intensity * red_factor, 0, max_val
+                result[:, :, 0][cell_mask] + intensity * factor, 0, max_val
             )
             result[:, :, 1][cell_mask] = np.clip(
-                result[:, :, 1][cell_mask] + intensity * green_factor, 0, max_val
+                result[:, :, 1][cell_mask] + intensity * factor, 0, max_val
             )
             result[:, :, 2][cell_mask] = np.clip(
-                result[:, :, 2][cell_mask] + intensity * blue_factor, 0, max_val
+                result[:, :, 2][cell_mask] + intensity * factor, 0, max_val
             )
         else:
             # For grayscale images
@@ -149,19 +147,17 @@ def add_cell_fragments(image, num_fragments=5, size_range=(10, 30), intensity_ra
         
         # Add fragment to the image
         if len(image.shape) == 3:
-            # For RGB images, add primarily to green channel for calcium
-            green_factor = 1.0
-            red_factor = 0.2
-            blue_factor = 0.2
+            # For RGB images, add equal amounts to all channels for grayscale appearance
+            factor = 1.0
             
             result[:, :, 0] = np.clip(
-                result[:, :, 0] + fragment * intensity * red_factor, 0, max_val
+                result[:, :, 0] + fragment * intensity * factor, 0, max_val
             )
             result[:, :, 1] = np.clip(
-                result[:, :, 1] + fragment * intensity * green_factor, 0, max_val
+                result[:, :, 1] + fragment * intensity * factor, 0, max_val
             )
             result[:, :, 2] = np.clip(
-                result[:, :, 2] + fragment * intensity * blue_factor, 0, max_val
+                result[:, :, 2] + fragment * intensity * factor, 0, max_val
             )
         else:
             result = np.clip(result + fragment * intensity, 0, max_val)

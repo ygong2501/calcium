@@ -396,16 +396,16 @@ class SettingsPanel:
         self.frag_count_var.set("5")
         
         self.radial_dist_var.set(False)
-        self.chromatic_ab_var.set(True)
-        self.vignetting_var.set(True)
+        self.chromatic_ab_var.set(False)
+        self.vignetting_var.set(False)
         self.vignetting_strength_var.set("0.5")
         
-        self.poisson_noise_var.set(True)
-        self.readout_noise_var.set(True)
-        self.gaussian_noise_var.set(True)
+        self.poisson_noise_var.set(False)
+        self.readout_noise_var.set(False)
+        self.gaussian_noise_var.set(False)
         self.gaussian_sigma_var.set("0.1")
         
-        self.defocus_blur_var.set(True)
+        self.defocus_blur_var.set(False)
         self.defocus_sigma_var.set("3.0")
         self.partial_defocus_var.set(False)
         self.adjust_bc_var.set(False)

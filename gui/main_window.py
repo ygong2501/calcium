@@ -21,9 +21,9 @@ except ImportError:
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from calcium_simulation.core.parameters import SimulationParameters
-from calcium_simulation.core.pouch import Pouch
-from calcium_simulation.utils.image_processing import apply_all_defects
+from core.parameters import SimulationParameters
+from core.pouch import Pouch
+from utils.image_processing import apply_all_defects
 
 # Only import GUI components if tkinter is available
 if TKINTER_AVAILABLE:
@@ -91,6 +91,12 @@ class MainWindow:
         )
         self.save_btn.pack(side=tk.LEFT, padx=5)
         
+        self.generate_video_btn = ttk.Button(
+            self.action_bar, text="Generate Video", 
+            command=self.generate_video
+        )
+        self.generate_video_btn.pack(side=tk.LEFT, padx=5)
+        
         self.save_preset_btn = ttk.Button(
             self.action_bar, text="Save Preset", 
             command=self.save_preset
@@ -151,13 +157,17 @@ class MainWindow:
                 sim_type=sim_params.get('sim_type', 'Intercellular waves')
             )
             
+            # Get a simulation name based on type and random number
+            sim_type_short = sim_params.get('sim_type', 'Waves').replace(' ', '_')
+            sim_name = f"{sim_type_short}_{np.random.randint(0, 10000)}"
+            
             # Create pouch with parameters
             pouch = Pouch(
                 params=params.get_params_dict(),
                 size=sim_params.get('pouch_size', 'small'),
                 sim_number=np.random.randint(0, 10000),
                 save=False,
-                save_name='GUI_Preview',
+                save_name=sim_name,
                 output_size=(512, 512)
             )
             
@@ -247,7 +257,7 @@ class MainWindow:
             output_dir (str): Output directory.
         """
         try:
-            from calcium_simulation.main import generate_simulation_batch
+            from main import generate_simulation_batch
             
             # Create a progress update function
             def progress_callback(current, total):
@@ -375,6 +385,79 @@ class MainWindow:
             self.status_var.set(f"Preset loaded from {file_path}")
         except Exception as e:
             messagebox.showerror("Load Error", f"Error loading preset: {str(e)}")
+            
+    def generate_video(self):
+        """Generate an animation from the current simulation."""
+        if self.current_pouch is None:
+            messagebox.showwarning("Warning", "No simulation to generate video from. Please generate a preview first.")
+            return
+        
+        # Ask for save path
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".mp4",
+            filetypes=[("MP4 files", "*.mp4"), ("All files", "*.*")]
+        )
+        
+        if not file_path:
+            return  # User cancelled
+        
+        # Update status
+        self.status_var.set("Generating video...")
+        self.simulation_running = True
+        
+        # Disable buttons during video generation
+        self.generate_btn.config(state=tk.DISABLED)
+        self.batch_btn.config(state=tk.DISABLED)
+        self.generate_video_btn.config(state=tk.DISABLED)
+        
+        # Start video generation in a separate thread
+        threading.Thread(target=self._run_video_generation, 
+                        args=(file_path,),
+                        daemon=True).start()
+    
+    def _run_video_generation(self, output_path):
+        """
+        Run video generation in a background thread.
+        
+        Args:
+            output_path (str): Path to save the video.
+        """
+        try:
+            # Get parent directory
+            output_dir = os.path.dirname(output_path)
+            if not output_dir:
+                output_dir = '.'
+                
+            # Check if output directory exists
+            if not os.path.exists(output_dir):
+                os.makedirs(output_dir)
+            
+            # Generate animation using current pouch
+            fps = 10  # frames per second
+            skip_frames = 50  # skip frames to make video length reasonable
+            
+            self.root.after(0, lambda: self.status_var.set("Creating animation..."))
+            
+            # Generate and save animation
+            anim = self.current_pouch.make_animation(path=output_dir, fps=fps, skip_frames=skip_frames)
+            
+            self.root.after(0, lambda: self.status_var.set("Video generation complete"))
+            self.root.after(0, lambda: messagebox.showinfo("Video Complete", 
+                                                 f"Video saved to {output_path}"))
+            
+        except Exception as e:
+            # Handle errors
+            error_msg = f"Error generating video: {str(e)}"
+            self.root.after(0, lambda: self.status_var.set(error_msg))
+            self.root.after(0, lambda: messagebox.showerror("Video Error", error_msg))
+        
+        # Enable buttons
+        self.root.after(0, lambda: self.generate_btn.config(state=tk.NORMAL))
+        self.root.after(0, lambda: self.batch_btn.config(state=tk.NORMAL))
+        self.root.after(0, lambda: self.generate_video_btn.config(state=tk.NORMAL))
+        
+        # Update status
+        self.simulation_running = False
 
 
 def launch_gui():

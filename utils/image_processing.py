@@ -6,9 +6,9 @@ import cv2
 from skimage import transform
 import os
 
-from ..artifacts.optical import apply_optical_defects
-from ..artifacts.sensor import apply_sensor_defects
-from ..artifacts.background import apply_background_defects
+from artifacts.optical import apply_optical_defects
+from artifacts.sensor import apply_sensor_defects
+from artifacts.background import apply_background_defects
 
 
 def resize_image(image, target_size=(512, 512)):
