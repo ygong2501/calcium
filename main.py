@@ -95,8 +95,8 @@ def generate_simulation_batch(num_simulations, output_dir, pouch_sizes=None,
                               sim_types=None, time_steps=None, defect_configs=None,
                               progress_callback=None, num_threads=None):
     """
-    Batch generate simulation images.
-
+    Batch generate simulation images, labels, and individual binary masks for each cell.
+    
     Args:
         num_simulations (int): Number of simulations to generate.
         output_dir (str): Output directory.
@@ -108,7 +108,7 @@ def generate_simulation_batch(num_simulations, output_dir, pouch_sizes=None,
             Function signature: callback(current_sim, total_sims)
         num_threads (int, optional): Number of threads to use for parallel processing.
             If None, uses available CPU cores.
-
+    
     Returns:
         dict: Simulation results info.
     """
@@ -117,8 +117,7 @@ def generate_simulation_batch(num_simulations, output_dir, pouch_sizes=None,
 
     # Set number of threads for parallel processing
     if num_threads is None:
-        num_threads = max(1, multiprocessing.cpu_count() -
-                          1)  # Leave one core free
+        num_threads = max(1, multiprocessing.cpu_count() - 1)  # Leave one core free
 
     # Default values
     if pouch_sizes is None:
@@ -181,20 +180,22 @@ def generate_simulation_batch(num_simulations, output_dir, pouch_sizes=None,
             )
 
             # Run simulation
-            print(
-                f"Running simulation {sim_idx+1}/{num_simulations}: {sim_type} on {pouch_size} pouch")
+            print(f"Running simulation {sim_idx+1}/{num_simulations}: {sim_type} on {pouch_size} pouch")
             pouch.simulate()
 
             # Create directories for this simulation
             sim_dir = os.path.join(output_dir, sim_name)
             img_dir = os.path.join(sim_dir, 'images')
             label_dir = os.path.join(sim_dir, 'labels')
+            mask_dir = os.path.join(sim_dir, 'masks')  # [MODIFICATION] NEW: directory for masks
             os.makedirs(img_dir, exist_ok=True)
             os.makedirs(label_dir, exist_ok=True)
+            os.makedirs(mask_dir, exist_ok=True)
 
-            # Generate images and labels for each time step
+            # Generate images, labels, and masks for each time step
             image_files = []
             label_files = []
+            mask_files = []  # [MODIFICATION] NEW: to store mask file paths
 
             for time_step in time_steps:
                 if time_step >= pouch.T:
@@ -208,10 +209,9 @@ def generate_simulation_batch(num_simulations, output_dir, pouch_sizes=None,
 
                 try:
                     # Generate clean image
-                    clean_image = pouch.generate_image(
-                        time_step, with_border=False)
+                    clean_image = pouch.generate_image(time_step, with_border=False)
 
-                    # Apply defects
+                    # Apply defects (using pouch.get_cell_masks() for defect computations)
                     processed_image = apply_all_defects(
                         clean_image,
                         pouch.get_cell_masks(),
@@ -220,24 +220,40 @@ def generate_simulation_batch(num_simulations, output_dir, pouch_sizes=None,
 
                     # Generate labels
                     label_data = generate_labels(pouch, time_step)
-
-                    # Add defect configuration to label data
                     label_data['defect_config'] = defect_config
 
                     # Save image and label
                     img_filename = f"{sim_name}_t{time_step:05d}.png"
                     label_filename = f"{sim_name}_t{time_step:05d}.json"
-
-                    img_path = save_image(
-                        processed_image, img_dir, img_filename)
-                    label_path = save_label(
-                        label_data, label_dir, label_filename)
-
+                    img_path = save_image(processed_image, img_dir, img_filename)
+                    label_path = save_label(label_data, label_dir, label_filename)
                     image_files.append(img_path)
                     label_files.append(label_path)
+
+                    # ======================================================================
+                    # [MODIFICATION] Begin splitting the multi-instance mask into binary masks
+                    # Get the multi-instance mask from pouch; this mask has cell IDs (integers)
+                    multi_instance_mask = pouch.get_cell_masks()
+
+                    # Obtain unique cell IDs (skip background label 0)
+                    cell_ids = np.unique(multi_instance_mask)
+                    for cell_id in cell_ids:
+                        if cell_id == 0:
+                            continue  # Skip background
+                        # Create a binary mask for the current cell instance
+                        instance_mask = (multi_instance_mask == cell_id).astype(np.uint8)
+                        # Multiply by 255 to prepare the mask for saving as PNG
+                        instance_mask = instance_mask * 255
+
+                        # Generate a file name for this instance mask (using cell_id)
+                        mask_filename = f"{sim_name}_t{time_step:05d}_mask_{cell_id:03d}.png"
+                        mask_path = save_image(instance_mask, mask_dir, mask_filename)
+                        mask_files.append(mask_path)
+                    # [MODIFICATION] End splitting the multi-instance mask
+                    # ======================================================================
+
                 except Exception as e:
-                    print(
-                        f"Error processing time step {time_step} for simulation {sim_idx}: {str(e)}")
+                    print(f"Error processing time step {time_step} for simulation {sim_idx}: {str(e)}")
                     continue  # Skip this time step but continue with others
 
             # Add simulation info to results
@@ -249,9 +265,9 @@ def generate_simulation_batch(num_simulations, output_dir, pouch_sizes=None,
                 'parameters': sim_params,
                 'image_count': len(image_files),
                 'image_dir': img_dir,
-                'label_dir': label_dir
+                'label_dir': label_dir,
+                'mask_dir': mask_dir  # [MODIFICATION] Include mask directory info in simulation info
             }
-
             results['simulations'].append(sim_info)
 
             # Add to dataset
@@ -280,7 +296,6 @@ def generate_simulation_batch(num_simulations, output_dir, pouch_sizes=None,
                     elif isinstance(obj, np.ndarray):
                         return obj.tolist()
                     return super(NumpyEncoder, self).default(obj)
-
             json.dump(results, f, indent=4, cls=NumpyEncoder)
     except Exception as e:
         print(f"Error saving results: {str(e)}")
