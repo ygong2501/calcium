@@ -29,6 +29,7 @@ from utils.image_processing import apply_all_defects
 if TKINTER_AVAILABLE:
     from .settings_panel import SettingsPanel
     from .preview_panel import PreviewPanel
+    from .dataset_panel import DatasetPanel
 
 
 class MainWindow:
@@ -43,7 +44,7 @@ class MainWindow:
         """
         self.root = root
         self.root.title("Calcium Simulation System")
-        self.root.geometry("1200x800")
+        self.root.geometry("1400x850")  # Increased size to accommodate panels better
         
         # Set icon (if available)
         icon_path = os.path.join(os.path.dirname(__file__), "../assets/icon.ico")
@@ -56,20 +57,51 @@ class MainWindow:
         self.current_image = None
         self.current_defect_config = {}
         
-        # Create the main frame
-        self.main_frame = ttk.Frame(self.root)
-        self.main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        # Create main notebook for tabs
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Create simulation tab
+        self.simulation_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.simulation_tab, text="Simulation")
+        
+        # Create dataset tab
+        self.dataset_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.dataset_tab, text="Dataset Creation")
+        
+        # Setup simulation tab with fixed width for left panel
+        self.main_frame = ttk.Frame(self.simulation_tab)
+        self.main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Create a PanedWindow to allow user to adjust the split
+        self.paned_window = ttk.PanedWindow(self.main_frame, orient=tk.HORIZONTAL)
+        self.paned_window.pack(fill=tk.BOTH, expand=True)
+        
+        # Left panel container with fixed width
+        self.left_frame = ttk.Frame(self.paned_window, width=300)
+        self.left_frame.pack_propagate(False)  # Prevent shrinking
         
         # Create left panel (settings)
-        self.settings_panel = SettingsPanel(self.main_frame, self)
-        self.settings_panel.frame.pack(side=tk.LEFT, fill=tk.Y, padx=5, pady=5)
+        self.settings_panel = SettingsPanel(self.left_frame, self)
+        self.settings_panel.frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Right panel for preview
+        self.right_frame = ttk.Frame(self.paned_window)
         
         # Create right panel (preview)
-        self.preview_panel = PreviewPanel(self.main_frame, self)
-        self.preview_panel.frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.preview_panel = PreviewPanel(self.right_frame, self)
+        self.preview_panel.frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
-        # Create bottom action bar
-        self.action_bar = ttk.Frame(self.root)
+        # Add both frames to the paned window
+        self.paned_window.add(self.left_frame, weight=1)
+        self.paned_window.add(self.right_frame, weight=3)
+        
+        # Setup dataset tab
+        self.dataset_panel = DatasetPanel(self.dataset_tab, self)
+        self.dataset_panel.frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Create bottom action bar for simulation tab
+        self.action_bar = ttk.Frame(self.simulation_tab)
         self.action_bar.pack(fill=tk.X, side=tk.BOTTOM, padx=10, pady=10)
         
         # Add action buttons
@@ -182,8 +214,18 @@ class MainWindow:
             if time_step >= pouch.T:
                 time_step = pouch.T - 1
             
-            # Generate clean image
-            clean_image = pouch.generate_image(time_step, with_border=False)
+            # Generate clean image with edge blur if enabled
+            edge_blur = defect_config.get('edge_blur', False)
+            blur_kernel_size = defect_config.get('blur_kernel_size', 3)
+            blur_type = defect_config.get('blur_type', 'mean')
+            
+            clean_image = pouch.generate_image(
+                time_step, 
+                with_border=False,
+                edge_blur=edge_blur,
+                blur_kernel_size=blur_kernel_size,
+                blur_type=blur_type
+            )
             
             # Apply defects
             processed_image = apply_all_defects(
@@ -268,6 +310,30 @@ class MainWindow:
             # Get parameters
             num_simulations = int(batch_params.get('num_simulations', 5))
             
+            # Get edge blur settings
+            edge_blur = batch_params.get('edge_blur', False)
+            blur_kernel_size = int(batch_params.get('blur_kernel_size', 3))
+            blur_type = batch_params.get('blur_type', 'mean')
+            
+            # Get dataset creation settings from the dataset panel
+            # Use default values if dataset panel isn't available
+            create_dataset = True  # Always create dataset
+            
+            try:
+                # Access dataset panel values for split ratios if available
+                train_ratio = self.dataset_panel.train_var.get()
+                val_ratio = self.dataset_panel.val_var.get()
+                test_ratio = self.dataset_panel.test_var.get()
+            except (AttributeError, tk.TclError):
+                # Use defaults if dataset panel not available or value retrieval fails
+                train_ratio = 0.7
+                val_ratio = 0.15
+                test_ratio = 0.15
+            
+            # Get defect settings from the settings panel
+            defect_config = self.settings_panel.get_defect_configuration()
+            defect_configs = [defect_config] * num_simulations if defect_config else None
+            
             # Run batch generation with progress callback
             results = generate_simulation_batch(
                 num_simulations=num_simulations,
@@ -275,10 +341,21 @@ class MainWindow:
                 pouch_sizes=batch_params.get('pouch_sizes', None),
                 sim_types=batch_params.get('sim_types', None),
                 time_steps=batch_params.get('time_steps', None),
-                progress_callback=progress_callback
+                defect_configs=defect_configs,
+                progress_callback=progress_callback,
+                create_dataset=create_dataset,
+                dataset_split_ratios=(train_ratio, val_ratio, test_ratio),
+                edge_blur=edge_blur,
+                blur_kernel_size=blur_kernel_size,
+                blur_type=blur_type,
+                memory_threshold=80  # Set memory threshold for garbage collection
             )
             
-            # Show success message
+            # Build success message
+            batch_dir = results.get('output_dir', output_dir)
+            total_simulations = len(results.get('simulations', []))
+            
+            # Show dataset information since we always create dataset now
             stats = results.get('dataset_stats', {})
             train_count = stats.get('num_images', {}).get('train', 0)
             val_count = stats.get('num_images', {}).get('val', 0)
@@ -287,9 +364,11 @@ class MainWindow:
             
             success_msg = (
                 f"Batch generation complete.\n"
-                f"Generated {num_simulations} simulations with {total_images} total images.\n"
-                f"Train: {train_count}, Validation: {val_count}, Test: {test_count}"
+                f"Generated {total_simulations} simulations with {total_images} total images.\n"
+                f"Train: {train_count}, Validation: {val_count}, Test: {test_count}\n"
+                f"Output directory: {batch_dir}"
             )
+            
             self.root.after(0, lambda: messagebox.showinfo("Batch Complete", success_msg))
             
         except Exception as e:

@@ -6,60 +6,7 @@ import cv2
 from scipy import ndimage
 
 
-def add_radial_distortion(image, k1=0.1, k2=0.05):
-    """
-    Add radial distortion to simulate lens distortion.
-    
-    Args:
-        image (numpy.ndarray): Input image.
-        k1 (float): First radial distortion coefficient.
-        k2 (float): Second radial distortion coefficient.
-    
-    Returns:
-        numpy.ndarray: Distorted image.
-    """
-    rows, cols = image.shape[:2]
-    
-    # Create maps for the distortion
-    center_x, center_y = cols / 2, rows / 2
-    
-    # Create coordinate grid
-    y, x = np.indices((rows, cols))
-    
-    # Shift origin to center
-    x = x - center_x
-    y = y - center_y
-    
-    # Calculate radius^2
-    r2 = x**2 + y**2
-    r4 = r2**2
-    
-    # Calculate distortion
-    distortion = 1 + k1 * r2 + k2 * r4
-    
-    # Apply distortion
-    x_distorted = x * distortion + center_x
-    y_distorted = y * distortion + center_y
-    
-    # Ensure coordinates are within bounds
-    x_distorted = np.clip(x_distorted, 0, cols - 1)
-    y_distorted = np.clip(y_distorted, 0, rows - 1)
-    
-    # Sample the image at the distorted coordinates
-    # For RGB images
-    if len(image.shape) == 3:
-        distorted_image = np.zeros_like(image)
-        for i in range(image.shape[2]):
-            distorted_image[:, :, i] = ndimage.map_coordinates(
-                image[:, :, i], [y_distorted.ravel(), x_distorted.ravel()], 
-                order=1).reshape(rows, cols)
-    else:
-        # For grayscale images
-        distorted_image = ndimage.map_coordinates(
-            image, [y_distorted.ravel(), x_distorted.ravel()], 
-            order=1).reshape(rows, cols)
-    
-    return distorted_image
+# Radial distortion function has been removed
 
 
 def add_chromatic_aberration(image, offset=3):
@@ -148,11 +95,7 @@ def apply_optical_defects(image, config):
     """
     result = image.copy()
     
-    # Apply radial distortion
-    if config.get('radial_distortion', False):
-        k1 = config.get('radial_k1', 0.1)
-        k2 = config.get('radial_k2', 0.05)
-        result = add_radial_distortion(result, k1, k2)
+    # Radial distortion application has been removed
     
     # Apply chromatic aberration
     if config.get('chromatic_aberration', False):

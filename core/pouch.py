@@ -247,15 +247,18 @@ class Pouch:
             warnings.warn(f"Simulation error: {str(e)}")
             raise
     
-    def generate_image(self, time_step, output_path=None, with_border=False, colormap='gray'):
+    def generate_image(self, time_step, output_path=None, with_border=False, colormap='gray', edge_blur=False, blur_kernel_size=3, blur_type='mean'):
         """
-        Generate single-frame image.
+        Generate single-frame image using PIL instead of matplotlib for memory efficiency.
         
         Args:
             time_step (int): Time step to generate.
             output_path (str, optional): Output path, no save if None.
             with_border (bool): Whether to display cell boundaries.
-            colormap (str): Matplotlib colormap to use.
+            colormap (str): Colormap to use ('gray', 'viridis', 'plasma', etc).
+            edge_blur (bool): Whether to apply convolution blur to cell edges.
+            blur_kernel_size (int): Size of the convolution kernel for edge blur.
+            blur_type (str): Type of convolution blur ('mean' or 'motion').
             
         Returns:
             numpy.ndarray: Image array (512×512 pixels).
@@ -267,79 +270,153 @@ class Pouch:
             raise ValueError(f"Time step must be between 0 and {self.T-1}")
         
         try:
-            # Create a figure with the specified output size
+            # Create a blank image with specified output size
             width, height = self.output_size
-            dpi = 100  # Default DPI
-            figsize = (width / dpi, height / dpi)
-            
-            # Create a new figure
-            fig = plt.figure(figsize=figsize, dpi=dpi)
-            ax = fig.add_subplot(1, 1, 1)
-            ax.axis('off')
-            fig.patch.set_alpha(0.)
-            
-            # Setup colormap
-            cmap = plt.cm.get_cmap(colormap)
+            img_data = np.zeros((height, width, 3), dtype=np.uint8)
             
             # Get calcium activity for the current time step
             calcium_activity = self.disc_dynamics[:, 0, time_step]
             
-            # Ensure low activity appears dark by setting proper normalization
+            # Normalization for activity values
             vmin = 0
             vmax = max(np.max(calcium_activity), 0.5)  # Ensure bright cells are visible
-            normalize = matplotlib.colors.Normalize(vmin=vmin, vmax=vmax)
             
-            # Draw the cells
-            for i, cell in enumerate(self.new_vertices):
-                # Get cell activity at this time step
-                cell_activity = calcium_activity[i]
+            # Define color mapping function similar to matplotlib's colormap
+            def map_value_to_color(value, colormap_name='gray'):
+                normalized = np.clip((value - vmin) / (vmax - vmin), 0, 1)
                 
-                # Map to color
-                cell_color = colors.to_hex(cmap(normalize(cell_activity)), keep_alpha=False)
-                
-                # Draw cell polygon
-                if with_border:
-                    ax.plot(cell[:, 0], cell[:, 1], linewidth=1.0, color='k')
+                if colormap_name == 'gray':
+                    # Simple grayscale mapping
+                    color_val = int(255 * normalized)
+                    return (color_val, color_val, color_val)
+                elif colormap_name == 'viridis':
+                    # Simplified viridis-like mapping
+                    if normalized < 0.25:
+                        return (68, 1, 84)
+                    elif normalized < 0.5:
+                        return (59, 82, 139)
+                    elif normalized < 0.75:
+                        return (33, 145, 140)
+                    else:
+                        return (253, 231, 37)
+                elif colormap_name == 'plasma':
+                    # Simplified plasma-like mapping
+                    if normalized < 0.25:
+                        return (13, 8, 135)
+                    elif normalized < 0.5:
+                        return (156, 23, 158)
+                    elif normalized < 0.75:
+                        return (237, 121, 83)
+                    else:
+                        return (240, 249, 33)
                 else:
-                    # No need to draw invisible lines
-                    pass
-                
-                # Fill cell with appropriate color
-                ax.fill(cell[:, 0], cell[:, 1], cell_color)
+                    # Default to grayscale
+                    color_val = int(255 * normalized)
+                    return (color_val, color_val, color_val)
             
-            # Adjust layout
-            plt.subplots_adjust(left=0, right=1, top=1, bottom=0, wspace=0, hspace=0)
+            # Find the scaling factors to map cell vertices to the image dimensions
+            x_coords = [v[:, 0] for v in self.new_vertices]
+            y_coords = [v[:, 1] for v in self.new_vertices]
+            
+            all_x = np.concatenate(x_coords)
+            all_y = np.concatenate(y_coords)
+            
+            x_min, x_max = np.min(all_x), np.max(all_x)
+            y_min, y_max = np.min(all_y), np.max(all_y)
+            
+            # Create borders mask if needed
+            edges_mask = None
+            if with_border or edge_blur:
+                edges_mask = np.zeros((height, width), dtype=np.uint8)
+            
+            # Draw cells directly using OpenCV for better performance
+            for i, cell in enumerate(self.new_vertices):
+                # Get cell activity and map to color
+                cell_activity = calcium_activity[i]
+                color = map_value_to_color(cell_activity, colormap)
+                
+                # Normalize and scale vertices to image coordinates
+                cell_x = ((cell[:, 0] - x_min) / (x_max - x_min) * (width - 1)).astype(int)
+                cell_y = ((cell[:, 1] - y_min) / (y_max - y_min) * (height - 1)).astype(int)
+                
+                # Create a polygon for this cell
+                points = np.vstack([cell_x, cell_y]).T
+                points = points.reshape((-1, 1, 2)).astype(np.int32)
+                
+                # Fill the cell
+                cell_mask = np.zeros((height, width), dtype=np.uint8)
+                cv2.fillPoly(cell_mask, [points], color=1)
+                
+                # Apply cell color
+                for c in range(3):  # RGB channels
+                    img_data[:, :, c] = np.where(cell_mask > 0, color[c], img_data[:, :, c])
+                
+                # Draw borders if requested
+                if with_border or edge_blur:
+                    cv2.polylines(edges_mask, [points], True, 255, 1)
+            
+            # Apply edge blur if requested
+            if edge_blur and edges_mask is not None:
+                # Create convolution kernel based on requested blur type
+                if blur_type == 'mean':
+                    # Simple box/mean blur kernel
+                    kernel = np.ones((blur_kernel_size, blur_kernel_size), np.float32) / (blur_kernel_size * blur_kernel_size)
+                elif blur_type == 'motion':
+                    # Motion blur kernel (horizontal direction)
+                    kernel = np.zeros((blur_kernel_size, blur_kernel_size), np.float32)
+                    kernel[blur_kernel_size // 2, :] = 1.0 / blur_kernel_size
+                else:
+                    # Default to mean blur
+                    kernel = np.ones((blur_kernel_size, blur_kernel_size), np.float32) / (blur_kernel_size * blur_kernel_size)
+                
+                # Apply convolution to the edges
+                edges_blurred = cv2.filter2D(edges_mask, -1, kernel)
+                
+                # Dilate to increase the edge area for better visibility of blur
+                kernel_dilate = np.ones((3, 3), np.uint8)
+                edges_dilated = cv2.dilate(edges_blurred, kernel_dilate, iterations=1)
+                
+                # Create mask for blending
+                edge_blend_mask = edges_dilated / 255.0
+                
+                # If we're not drawing borders, blur them into the background
+                if not with_border:
+                    # Create a blurred version of the image
+                    img_blurred = cv2.filter2D(img_data, -1, kernel)
+                    
+                    # Apply to original image only at the edge locations
+                    for c in range(3):
+                        img_data[:, :, c] = img_data[:, :, c] * (1 - edge_blend_mask) + img_blurred[:, :, c] * edge_blend_mask
+                else:
+                    # If borders are already drawn, just enhance them with blur
+                    for c in range(3):
+                        # Darken the edges
+                        img_data[:, :, c] = np.where(edges_mask > 0, img_data[:, :, c] // 2, img_data[:, :, c])
+            
+            # Draw borders directly as dark lines if requested and no blur
+            if with_border and not edge_blur:
+                for i, cell in enumerate(self.new_vertices):
+                    # Normalize and scale vertices
+                    cell_x = ((cell[:, 0] - x_min) / (x_max - x_min) * (width - 1)).astype(int)
+                    cell_y = ((cell[:, 1] - y_min) / (y_max - y_min) * (height - 1)).astype(int)
+                    
+                    points = np.vstack([cell_x, cell_y]).T
+                    points = points.reshape((-1, 1, 2)).astype(np.int32)
+                    
+                    # Draw black border lines
+                    cv2.polylines(img_data, [points], True, (0, 0, 0), 1)
             
             # Save if output path specified
             if output_path is not None:
                 output_dir = os.path.dirname(output_path)
                 if output_dir and not os.path.exists(output_dir):
                     os.makedirs(output_dir, exist_ok=True)
-                plt.savefig(output_path, dpi=dpi, bbox_inches='tight', pad_inches=0)
-            
-            # Get the image data
-            fig.canvas.draw()
-            img_data = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-            img_data = img_data.reshape(fig.canvas.get_width_height()[::-1] + (3,))
-            
-            # Close the figure to free memory
-            plt.close(fig)
-            
-            # Resize to standard 512x512 if not already that size
-            if img_data.shape[0] != 512 or img_data.shape[1] != 512:
-                img_data = resize(img_data, (512, 512, 3), anti_aliasing=True)
-                if img_data.max() <= 1.0:  # Check if resize returned values in [0,1]
-                    img_data = (img_data * 255).astype(np.uint8)
+                cv2.imwrite(output_path, cv2.cvtColor(img_data, cv2.COLOR_RGB2BGR))
             
             return img_data
             
         except Exception as e:
-            plt.close()  # Ensure figure is closed in case of error
             raise RuntimeError(f"Error generating image: {str(e)}")
-            
-        finally:
-            # Clean up any remaining matplotlib resources
-            plt.close('all')
     
     def make_animation(self, path=None, fps=10, skip_frames=50):
         """
@@ -414,39 +491,132 @@ class Pouch:
         
         return anim
     
-    def draw_profile(self, path=None, with_border=False):
+    def draw_profile(self, path=None, with_border=False, edge_blur=False, blur_kernel_size=3, blur_type='mean'):
         """
-        Draw the VPLC Profile for the simulation.
+        Draw the VPLC Profile for the simulation using PIL instead of matplotlib.
         
         Args:
             path (str, optional): Path to save the profile image.
             with_border (bool): Whether to show cell borders.
+            edge_blur (bool): Whether to apply convolution blur to cell edges.
+            blur_kernel_size (int): Size of the convolution kernel for edge blur.
+            blur_type (str): Type of convolution blur ('mean' or 'motion').
         """
-        # Create a standard-sized output
+        # Create a blank image with specified output size
         width, height = self.output_size
-        dpi = 100
-        figsize = (width / dpi, height / dpi)
+        img_data = np.zeros((height, width, 3), dtype=np.uint8)
         
-        colormap = plt.cm.Blues
-        normalize = matplotlib.colors.Normalize(vmin=.0, vmax=1.5)
+        # Normalization for VPLC values
+        vmin = 0.0
+        vmax = 1.5
         
-        fig = plt.figure(figsize=figsize, dpi=dpi)
-        ax = fig.add_subplot(1, 1, 1)
-        ax.axis('off')
-        fig.patch.set_alpha(0.)
-        
-        for i, cell in enumerate(self.new_vertices):
-            if with_border:
-                ax.plot(cell[:, 0], cell[:, 1], linewidth=1.0, color='k')
-            else:
-                ax.plot(cell[:, 0], cell[:, 1], linewidth=0.0, color='w', alpha=0.0)
+        # Define Blues colormap function (simplified version of matplotlib's Blues)
+        def blues_colormap(value):
+            normalized = np.clip((value - vmin) / (vmax - vmin), 0, 1)
             
-            c = colors.to_hex(colormap(normalize(self.VPLC_state[i]))[0], keep_alpha=False)
-            ax.fill(cell[:, 0], cell[:, 1], c)
+            # Simple blues colormap approximation
+            if normalized < 0.25:
+                return (240, 249, 255)  # Light blue
+            elif normalized < 0.5:
+                return (189, 215, 231)
+            elif normalized < 0.75:
+                return (107, 174, 214)
+            else:
+                return (33, 113, 181)    # Dark blue
         
-        # Adjust layout
-        plt.subplots_adjust(left=0, right=1, top=1, bottom=0, wspace=0, hspace=0)
+        # Find the scaling factors to map cell vertices to the image dimensions
+        x_coords = [v[:, 0] for v in self.new_vertices]
+        y_coords = [v[:, 1] for v in self.new_vertices]
         
+        all_x = np.concatenate(x_coords)
+        all_y = np.concatenate(y_coords)
+        
+        x_min, x_max = np.min(all_x), np.max(all_x)
+        y_min, y_max = np.min(all_y), np.max(all_y)
+        
+        # Create borders mask if needed
+        edges_mask = None
+        if with_border or edge_blur:
+            edges_mask = np.zeros((height, width), dtype=np.uint8)
+        
+        # Draw cells directly using OpenCV for better performance
+        for i, cell in enumerate(self.new_vertices):
+            # Get VPLC value and map to color
+            vplc_value = float(self.VPLC_state[i])
+            color = blues_colormap(vplc_value)
+            
+            # Normalize and scale vertices to image coordinates
+            cell_x = ((cell[:, 0] - x_min) / (x_max - x_min) * (width - 1)).astype(int)
+            cell_y = ((cell[:, 1] - y_min) / (y_max - y_min) * (height - 1)).astype(int)
+            
+            # Create a polygon for this cell
+            points = np.vstack([cell_x, cell_y]).T
+            points = points.reshape((-1, 1, 2)).astype(np.int32)
+            
+            # Fill the cell
+            cell_mask = np.zeros((height, width), dtype=np.uint8)
+            cv2.fillPoly(cell_mask, [points], color=1)
+            
+            # Apply cell color
+            for c in range(3):  # RGB channels
+                img_data[:, :, c] = np.where(cell_mask > 0, color[c], img_data[:, :, c])
+            
+            # Record borders if requested
+            if with_border or edge_blur:
+                cv2.polylines(edges_mask, [points], True, 255, 1)
+        
+        # Apply edge blur if requested
+        if edge_blur and edges_mask is not None:
+            # Create convolution kernel based on requested blur type
+            if blur_type == 'mean':
+                # Simple box/mean blur kernel
+                kernel = np.ones((blur_kernel_size, blur_kernel_size), np.float32) / (blur_kernel_size * blur_kernel_size)
+            elif blur_type == 'motion':
+                # Motion blur kernel (horizontal direction)
+                kernel = np.zeros((blur_kernel_size, blur_kernel_size), np.float32)
+                kernel[blur_kernel_size // 2, :] = 1.0 / blur_kernel_size
+            else:
+                # Default to mean blur
+                kernel = np.ones((blur_kernel_size, blur_kernel_size), np.float32) / (blur_kernel_size * blur_kernel_size)
+            
+            # Apply convolution to the edges
+            edges_blurred = cv2.filter2D(edges_mask, -1, kernel)
+            
+            # Dilate to increase the edge area for better visibility of blur
+            kernel_dilate = np.ones((3, 3), np.uint8)
+            edges_dilated = cv2.dilate(edges_blurred, kernel_dilate, iterations=1)
+            
+            # Create mask for blending
+            edge_blend_mask = edges_dilated / 255.0
+            
+            # If we're not drawing borders, blur them into the background
+            if not with_border:
+                # Create a blurred version of the image
+                img_blurred = cv2.filter2D(img_data, -1, kernel)
+                
+                # Apply to original image only at the edge locations
+                for c in range(3):
+                    img_data[:, :, c] = img_data[:, :, c] * (1 - edge_blend_mask) + img_blurred[:, :, c] * edge_blend_mask
+            else:
+                # If borders are already drawn, just enhance them with blur
+                for c in range(3):
+                    # Darken the edges
+                    img_data[:, :, c] = np.where(edges_mask > 0, img_data[:, :, c] // 2, img_data[:, :, c])
+        
+        # Draw borders directly as dark lines if requested and no blur
+        if with_border and not edge_blur:
+            for i, cell in enumerate(self.new_vertices):
+                # Normalize and scale vertices
+                cell_x = ((cell[:, 0] - x_min) / (x_max - x_min) * (width - 1)).astype(int)
+                cell_y = ((cell[:, 1] - y_min) / (y_max - y_min) * (height - 1)).astype(int)
+                
+                points = np.vstack([cell_x, cell_y]).T
+                points = points.reshape((-1, 1, 2)).astype(np.int32)
+                
+                # Draw black border lines
+                cv2.polylines(img_data, [points], True, (0, 0, 0), 1)
+        
+        # Save if path specified
         if self.save and path is not None:
             if not os.path.exists(path):
                 os.makedirs(path)
@@ -455,10 +625,10 @@ class Pouch:
                 path, 
                 f"{self.size}Disc_VPLCProfile_{self.sim_number}_{self.save_name}.png"
             )
-            fig.savefig(output_file, dpi=dpi, bbox_inches='tight', pad_inches=0)
-        
-        # Close the figure to free memory
-        plt.close(fig)
+            cv2.imwrite(output_file, cv2.cvtColor(img_data, cv2.COLOR_RGB2BGR))
+            
+        # Return the image data
+        return img_data
     
     def get_cell_masks(self):
         """
