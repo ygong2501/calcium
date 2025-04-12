@@ -1,0 +1,301 @@
+"""
+Dataset creation panel for the calcium simulation GUI.
+"""
+import os
+import sys
+import json
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+import threading
+
+# Add parent directory to path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from utils.dataset import generate_stats
+
+
+class DatasetPanel:
+    """Panel for CSV mapping creation."""
+    
+    def __init__(self, parent, main_window):
+        """
+        Initialize the dataset panel.
+        
+        Args:
+            parent (tk.Frame): Parent frame.
+            main_window (MainWindow): Main window reference.
+        """
+        self.parent = parent
+        self.main_window = main_window
+        
+        # Create main frame
+        self.frame = ttk.LabelFrame(parent, text="CSV Mapping Creation")
+        
+        # Source directory selection
+        self.source_frame = ttk.Frame(self.frame)
+        self.source_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        ttk.Label(self.source_frame, text="Source Directory:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
+        
+        self.source_var = tk.StringVar()
+        self.source_entry = ttk.Entry(self.source_frame, textvariable=self.source_var, width=30)
+        self.source_entry.grid(row=0, column=1, sticky=tk.W+tk.E, padx=5, pady=5)
+        
+        self.browse_btn = ttk.Button(self.source_frame, text="Browse", command=self.browse_source)
+        self.browse_btn.grid(row=0, column=2, padx=5, pady=5)
+        
+        # Split ratios
+        self.split_frame = ttk.LabelFrame(self.frame, text="Dataset Split Ratios")
+        self.split_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        # Training set ratio
+        ttk.Label(self.split_frame, text="Training Set:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
+        self.train_var = tk.DoubleVar(value=0.7)
+        self.train_scale = ttk.Scale(self.split_frame, from_=0.1, to=0.9, variable=self.train_var, 
+                                    orient=tk.HORIZONTAL, length=200, command=self.update_val_test_ratio)
+        self.train_scale.grid(row=0, column=1, sticky=tk.W+tk.E, padx=5, pady=5)
+        self.train_label = ttk.Label(self.split_frame, text="70%")
+        self.train_label.grid(row=0, column=2, padx=5, pady=5)
+        
+        # Validation set ratio
+        ttk.Label(self.split_frame, text="Validation Set:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
+        self.val_var = tk.DoubleVar(value=0.15)
+        self.val_scale = ttk.Scale(self.split_frame, from_=0.05, to=0.5, variable=self.val_var, 
+                                orient=tk.HORIZONTAL, length=200, command=self.update_train_test_ratio)
+        self.val_scale.grid(row=1, column=1, sticky=tk.W+tk.E, padx=5, pady=5)
+        self.val_label = ttk.Label(self.split_frame, text="15%")
+        self.val_label.grid(row=1, column=2, padx=5, pady=5)
+        
+        # Test set ratio
+        ttk.Label(self.split_frame, text="Test Set:").grid(row=2, column=0, sticky=tk.W, padx=5, pady=5)
+        self.test_var = tk.DoubleVar(value=0.15)
+        self.test_scale = ttk.Scale(self.split_frame, from_=0.05, to=0.5, variable=self.test_var, 
+                                 orient=tk.HORIZONTAL, length=200, command=self.update_train_val_ratio)
+        self.test_scale.grid(row=2, column=1, sticky=tk.W+tk.E, padx=5, pady=5)
+        self.test_label = ttk.Label(self.split_frame, text="15%")
+        self.test_label.grid(row=2, column=2, padx=5, pady=5)
+        
+        # Total ratio indicator
+        self.total_ratio_var = tk.StringVar(value="Total: 100%")
+        ttk.Label(self.split_frame, textvariable=self.total_ratio_var, font=("", 10, "bold")).grid(
+            row=3, column=0, columnspan=3, pady=10)
+        
+        # Output directory
+        self.output_frame = ttk.Frame(self.frame)
+        self.output_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        ttk.Label(self.output_frame, text="Output Directory:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
+        
+        self.output_var = tk.StringVar(value="output")
+        self.output_entry = ttk.Entry(self.output_frame, textvariable=self.output_var, width=30)
+        self.output_entry.grid(row=0, column=1, sticky=tk.W+tk.E, padx=5, pady=5)
+        
+        self.output_browse_btn = ttk.Button(self.output_frame, text="Browse", command=self.browse_output)
+        self.output_browse_btn.grid(row=0, column=2, padx=5, pady=5)
+        
+        # Dataset name
+        self.name_frame = ttk.Frame(self.frame)
+        self.name_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        ttk.Label(self.name_frame, text="Dataset Name:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
+        
+        self.name_var = tk.StringVar(value="my_dataset")
+        self.name_entry = ttk.Entry(self.name_frame, textvariable=self.name_var, width=30)
+        self.name_entry.grid(row=0, column=1, sticky=tk.W+tk.E, padx=5, pady=5)
+        
+        # Action buttons
+        self.buttons_frame = ttk.Frame(self.frame)
+        self.buttons_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        self.create_btn = ttk.Button(self.buttons_frame, text="Create Dataset", command=self.create_dataset)
+        self.create_btn.pack(side=tk.LEFT, padx=5, pady=5)
+        
+        # Progress bar
+        self.progress_frame = ttk.Frame(self.frame)
+        self.progress_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        self.progress_var = tk.DoubleVar()
+        self.progress_bar = ttk.Progressbar(self.progress_frame, variable=self.progress_var, length=300)
+        self.progress_bar.pack(fill=tk.X, padx=5, pady=5)
+        
+        self.status_var = tk.StringVar(value="Ready")
+        self.status_label = ttk.Label(self.progress_frame, textvariable=self.status_var)
+        self.status_label.pack(fill=tk.X, padx=5, pady=5)
+    
+    def update_val_test_ratio(self, *args):
+        """Update validation and test ratios when train ratio changes."""
+        train = self.train_var.get()
+        val = self.val_var.get()
+        test = self.test_var.get()
+        
+        # Calculate remaining proportion for val and test
+        remaining = 1.0 - train
+        
+        # Redistribute proportionally to val and test
+        if val + test > 0:
+            val_proportion = val / (val + test)
+            self.val_var.set(remaining * val_proportion)
+            self.test_var.set(remaining * (1 - val_proportion))
+        else:
+            self.val_var.set(remaining / 2)
+            self.test_var.set(remaining / 2)
+        
+        self.update_labels()
+    
+    def update_train_test_ratio(self, *args):
+        """Update train and test ratios when val ratio changes."""
+        train = self.train_var.get()
+        val = self.val_var.get()
+        test = self.test_var.get()
+        
+        # Calculate total and adjust test ratio
+        total = train + val + test
+        
+        if total > 1.0:
+            # Reduce test to maintain total = 1.0
+            self.test_var.set(max(0.05, 1.0 - train - val))
+        
+        self.update_labels()
+    
+    def update_train_val_ratio(self, *args):
+        """Update train and val ratios when test ratio changes."""
+        train = self.train_var.get()
+        val = self.val_var.get()
+        test = self.test_var.get()
+        
+        # Calculate total and adjust val ratio
+        total = train + val + test
+        
+        if total > 1.0:
+            # Reduce val to maintain total = 1.0
+            self.val_var.set(max(0.05, 1.0 - train - test))
+        
+        self.update_labels()
+    
+    def update_labels(self):
+        """Update ratio labels and total display."""
+        train = self.train_var.get()
+        val = self.val_var.get()
+        test = self.test_var.get()
+        
+        self.train_label.config(text=f"{train:.0%}")
+        self.val_label.config(text=f"{val:.0%}")
+        self.test_label.config(text=f"{test:.0%}")
+        
+        total = train + val + test
+        self.total_ratio_var.set(f"Total: {total:.0%}")
+        
+        # Highlight in red if total is not 100%
+        if abs(total - 1.0) > 0.01:
+            self.total_ratio_var.set(f"Total: {total:.0%} (must be 100%)")
+    
+    def browse_source(self):
+        """Browse for source directory."""
+        directory = filedialog.askdirectory(title="Select Source Directory")
+        if directory:
+            self.source_var.set(directory)
+    
+    def browse_output(self):
+        """Browse for output directory."""
+        directory = filedialog.askdirectory(title="Select Output Directory")
+        if directory:
+            self.output_var.set(directory)
+    
+    def create_dataset(self):
+        """Create a dataset from the source directory."""
+        # Validate inputs
+        source_dir = self.source_var.get()
+        if not source_dir or not os.path.isdir(source_dir):
+            messagebox.showerror("Error", "Please select a valid source directory")
+            return
+        
+        output_dir = self.output_var.get()
+        if not output_dir:
+            # Default to source directory if not specified
+            output_dir = source_dir
+        
+        if not os.path.isdir(output_dir):
+            try:
+                os.makedirs(output_dir, exist_ok=True)
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to create output directory: {str(e)}")
+                return
+        
+        dataset_name = self.name_var.get()
+        if not dataset_name:
+            messagebox.showerror("Error", "Please enter a dataset name")
+            return
+        
+        # Get split ratios
+        train_ratio = self.train_var.get()
+        val_ratio = self.val_var.get()
+        test_ratio = self.test_var.get()
+        
+        # Validate total is approximately 1.0
+        total_ratio = train_ratio + val_ratio + test_ratio
+        if abs(total_ratio - 1.0) > 0.01:
+            messagebox.showerror("Error", f"Split ratios must sum to 100% (currently {total_ratio:.0%})")
+            return
+        
+        # Disable buttons during processing
+        self.create_btn.config(state=tk.DISABLED)
+        self.status_var.set("Creating dataset...")
+        self.progress_var.set(0)
+        
+        # Start dataset creation in a separate thread
+        threading.Thread(target=self._process_dataset, 
+                        args=(source_dir, output_dir, dataset_name, (train_ratio, val_ratio, test_ratio)),
+                        daemon=True).start()
+    
+    def _process_dataset(self, source_dir, output_dir, dataset_name, split_ratios):
+        """
+        Process CSV creation in a background thread.
+        
+        Args:
+            source_dir (str): Source directory with simulation data.
+            output_dir (str): Output directory for dataset.
+            dataset_name (str): Name of the dataset (not used).
+            split_ratios (tuple): Train/validation/test split ratios (not used).
+        """
+        try:
+            # Will collect basic statistics later
+            
+            # Check if source directory has a batch structure
+            self.main_window.root.after(0, lambda: self.status_var.set("Creating CSV mapping..."))
+            
+            # Find all simulation directories
+            sim_dirs = []
+            for item in os.listdir(source_dir):
+                item_path = os.path.join(source_dir, item)
+                if os.path.isdir(item_path):
+                    # Check if it has images/masks subdirectories
+                    if os.path.isdir(os.path.join(item_path, 'images')) and \
+                       os.path.isdir(os.path.join(item_path, 'masks')):
+                        sim_dirs.append(item_path)
+            
+            # Create CSV mapping if needed
+            if sim_dirs:
+                from utils.labeling import create_dataset_csv_mapping
+                csv_path = create_dataset_csv_mapping(source_dir)
+                self.main_window.root.after(0, lambda: self.status_var.set(f"Created CSV mapping at {csv_path}"))
+            
+            # Generate basic statistics
+            stats = generate_stats(source_dir)
+            
+            # Show success message
+            self.main_window.root.after(0, lambda: self.status_var.set("CSV mapping complete"))
+            self.main_window.root.after(0, lambda: self.progress_var.set(100))
+            
+            # Create success message with statistics
+            stats_msg = f"Images: {stats.get('total_images', 0)}\nMasks: {stats.get('total_masks', 0)}"
+            self.main_window.root.after(0, lambda: messagebox.showinfo("Success", 
+                                                       f"CSV mapping created successfully.\n\nStatistics:\n{stats_msg}"))
+            
+        except Exception as e:
+            # Handle errors
+            error_msg = f"Error creating CSV mapping: {str(e)}"
+            self.main_window.root.after(0, lambda: self.status_var.set(error_msg))
+            self.main_window.root.after(0, lambda: messagebox.showerror("Error", error_msg))
+        
+        # Re-enable buttons
+        self.main_window.root.after(0, lambda: self.create_btn.config(state=tk.NORMAL))

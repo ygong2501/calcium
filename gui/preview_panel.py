@@ -29,9 +29,41 @@ class PreviewPanel:
             self.frame, text="Preview", font=("", 14, "bold")
         ).pack(side=tk.TOP, pady=10)
         
-        # Create canvas for image preview
-        self.canvas = tk.Canvas(self.frame, width=512, height=512, bg='black')
-        self.canvas.pack(side=tk.TOP, padx=10, pady=10)
+        # Create status frame
+        self.status_frame = ttk.Frame(self.frame)
+        self.status_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=5)
+        
+        # Status indicator
+        self.status_var = tk.StringVar()
+        self.status_var.set("Ready")
+        self.status_label = ttk.Label(
+            self.status_frame, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W
+        )
+        self.status_label.pack(fill=tk.X, expand=True)
+        
+        # Create canvas for image preview (resized to 640x640)
+        # Use scrollable frame for preview to allow viewing larger images without requiring window resizing
+        self.preview_scroll_frame = ttk.Frame(self.frame)
+        self.preview_scroll_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Set canvas with scrollbars
+        self.canvas = tk.Canvas(self.preview_scroll_frame, width=640, height=640, bg='black')
+        
+        # Add scrollbars
+        self.h_scrollbar = ttk.Scrollbar(self.preview_scroll_frame, orient=tk.HORIZONTAL, command=self.canvas.xview)
+        self.v_scrollbar = ttk.Scrollbar(self.preview_scroll_frame, orient=tk.VERTICAL, command=self.canvas.yview)
+        
+        # Configure canvas scrolling
+        self.canvas.configure(xscrollcommand=self.h_scrollbar.set, yscrollcommand=self.v_scrollbar.set)
+        
+        # Grid layout for canvas and scrollbars
+        self.canvas.grid(row=0, column=0, sticky='nsew')
+        self.h_scrollbar.grid(row=1, column=0, sticky='ew')
+        self.v_scrollbar.grid(row=0, column=1, sticky='ns')
+        
+        # Configure grid weights
+        self.preview_scroll_frame.grid_rowconfigure(0, weight=1)
+        self.preview_scroll_frame.grid_columnconfigure(0, weight=1)
         
         # Create info panel
         self.info_frame = ttk.Frame(self.frame)
@@ -141,9 +173,13 @@ class PreviewPanel:
         
         # Clear canvas and display new image
         self.canvas.delete("all")
+        # Create image centered in canvas
         self.canvas.create_image(
-            256, 256, image=self.current_tk_image
+            320, 320, image=self.current_tk_image, anchor=tk.CENTER
         )
+        
+        # Reset scroll region to encompass the image
+        self.canvas.config(scrollregion=self.canvas.bbox("all"))
     
     def _update_image_info(self):
         """Update image information display."""

@@ -5,7 +5,22 @@ import os
 import json
 import numpy as np
 import cv2
+import csv
+import re
 from skimage import measure
+import glob
+
+
+class NumpyEncoder(json.JSONEncoder):
+    """JSON encoder that handles NumPy types."""
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super(NumpyEncoder, self).default(obj)
 
 
 def generate_bounding_boxes(cells_mask, active_cells):
@@ -194,21 +209,117 @@ def save_label(label_data, output_path, filename):
     
     # Save label data
     with open(file_path, 'w') as f:
-        # Convert any numpy values to Python native types
-        def convert_numpy(obj):
-            if isinstance(obj, np.integer):
-                return int(obj)
-            elif isinstance(obj, np.floating):
-                return float(obj)
-            elif isinstance(obj, np.ndarray):
-                return obj.tolist()
-            return obj
-        
-        # Use custom converter for numpy types
-        class NumpyEncoder(json.JSONEncoder):
-            def default(self, obj):
-                return convert_numpy(obj) or super(NumpyEncoder, self).default(obj)
-        
         json.dump(label_data, f, indent=4, cls=NumpyEncoder)
     
     return file_path
+
+
+def create_csv_mapping(image_files, mask_files, output_path, filename="image_mask_mapping.csv"):
+    """
+    Create a CSV file mapping original images to their mask files.
+    
+    Args:
+        image_files (list): List of original image file paths.
+        mask_files (list): List of mask image file paths.
+        output_path (str): Output directory.
+        filename (str, optional): CSV filename.
+    
+    Returns:
+        str: Full path to saved CSV file.
+    """
+    # Create output directory if it doesn't exist
+    if not os.path.exists(output_path):
+        os.makedirs(output_path, exist_ok=True)
+    
+    # Ensure filename has extension
+    if not filename.lower().endswith('.csv'):
+        filename += '.csv'
+    
+    # Full path to output file
+    file_path = os.path.join(output_path, filename)
+    
+    # Create a mapping of images to masks
+    image_to_masks = {}
+    
+    # Extract base filenames from full paths
+    for img_path in image_files:
+        img_basename = os.path.basename(img_path)
+        # Use the complete filename with extension as the ImageId
+        image_to_masks[img_basename] = []
+    
+    # Find all masks for each image
+    for mask_path in mask_files:
+        mask_basename = os.path.basename(mask_path)
+        # Extract original image name from mask name
+        # Example: "Intercellular_waves_42_t00050_mask_007.jpg" -> "Intercellular_waves_42_t00050.jpg"
+        match = re.match(r'(.+?)_mask_\d+(\.\w+)$', mask_basename)
+        if match:
+            img_key_base = match.group(1)
+            img_extension = match.group(2)
+            img_key = f"{img_key_base}{img_extension}"
+            
+            if img_key in image_to_masks:
+                image_to_masks[img_key].append(mask_basename)
+    
+    # Write the CSV file with the direct filename mapping
+    with open(file_path, 'w', newline='') as f:
+        writer = csv.writer(f)
+        # Write header
+        writer.writerow(["ImageId", "MaskId"])
+        
+        # Write data rows using complete filenames
+        for img_key, masks in image_to_masks.items():
+            # If no masks, continue to next image
+            if not masks:
+                continue
+                
+            # For each mask of this image, write a row
+            for mask_name in masks:
+                writer.writerow([img_key, mask_name])
+    
+    return file_path
+
+
+def create_dataset_csv_mapping(batch_dir, filename="image_mask_mapping.csv"):
+    """
+    Create a CSV file mapping original images to their mask files for an entire dataset.
+    This function scans the batch directory to find all images and masks.
+    
+    Args:
+        batch_dir (str): Base directory containing simulation results.
+        filename (str, optional): CSV filename.
+    
+    Returns:
+        str: Full path to saved CSV file.
+    """
+    # Find all simulation directories
+    sim_dirs = [d for d in os.listdir(batch_dir) 
+                if os.path.isdir(os.path.join(batch_dir, d)) and not d.startswith('.')]
+    
+    all_images = []
+    all_masks = []
+    
+    # Find all images and masks
+    for sim_dir in sim_dirs:
+        sim_path = os.path.join(batch_dir, sim_dir)
+        img_dir = os.path.join(sim_path, 'images')
+        mask_dir = os.path.join(sim_path, 'masks')
+        
+        # Skip if directories don't exist
+        if not os.path.exists(img_dir) or not os.path.exists(mask_dir):
+            continue
+        
+        # Find all image files (both jpg and png)
+        images = glob.glob(os.path.join(img_dir, '*.jpg')) + glob.glob(os.path.join(img_dir, '*.png'))
+        masks = glob.glob(os.path.join(mask_dir, '*_mask_*.jpg')) + glob.glob(os.path.join(mask_dir, '*_mask_*.png'))
+        
+        all_images.extend(images)
+        all_masks.extend(masks)
+    
+    # Create the mapping if we found images and masks
+    if all_images and all_masks:
+        return create_csv_mapping(all_images, all_masks, batch_dir, filename)
+    else:
+        print(f"Warning: No images or masks found in {batch_dir} (Images: {len(all_images)}, Masks: {len(all_masks)})")
+        # Return a dummy file path as the CSV wasn't created
+        return os.path.join(batch_dir, filename)

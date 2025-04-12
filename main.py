@@ -1,7 +1,7 @@
 """
 Main entry point for calcium simulation system.
 """
-from utils.dataset import DatasetManager
+from utils.dataset import generate_stats
 from utils.labeling import generate_labels, save_label
 from utils.image_processing import apply_all_defects, save_image
 from core.geometry_loader import GeometryLoader
@@ -141,10 +141,11 @@ def monitor_memory():
 
 def generate_simulation_batch(num_simulations, output_dir, pouch_sizes=None,
                               sim_types=None, time_steps=None, defect_configs=None,
-                              progress_callback=None, num_threads=None,
-                              memory_threshold=85, create_dataset=True, 
-                              dataset_split_ratios=(0.7, 0.15, 0.15),
-                              edge_blur=False, blur_kernel_size=3, blur_type='mean'):
+                              progress_callback=None,
+                              memory_threshold=85, create_stats=True, 
+                              edge_blur=False, blur_kernel_size=3, blur_type='mean',
+                              generate_masks=True, image_size="512x512", jpeg_quality=90,
+                              save_pouch=False):
     """
     Batch generate simulation images, labels, and individual binary masks for each cell.
     Includes memory management, sequential batch processing, and file sequence management.
@@ -158,14 +159,12 @@ def generate_simulation_batch(num_simulations, output_dir, pouch_sizes=None,
         defect_configs (list, optional): List of defect configurations.
         progress_callback (callable, optional): Callback function to report progress.
             Function signature: callback(current_sim, total_sims)
-        num_threads (int, optional): Number of threads to use for parallel processing.
-            If None, uses available CPU cores.
         memory_threshold (int): Memory usage percentage threshold for forced garbage collection.
-        create_dataset (bool): Whether to create a dataset from the generated images.
-        dataset_split_ratios (tuple): Train/validation/test split ratios for dataset creation.
+        create_stats (bool): Whether to create statistics about the generated images.
         edge_blur (bool): Whether to apply convolution blur to cell edges.
         blur_kernel_size (int): Size of the convolution kernel for edge blur.
         blur_type (str): Type of convolution blur ('mean' or 'motion').
+        generate_masks (bool): Whether to generate individual masks for each cell.
     
     Returns:
         dict: Simulation results info.
@@ -173,9 +172,8 @@ def generate_simulation_batch(num_simulations, output_dir, pouch_sizes=None,
     # Create output directory if it doesn't exist
     os.makedirs(output_dir, exist_ok=True)
 
-    # Set number of threads for parallel processing
-    if num_threads is None:
-        num_threads = max(1, multiprocessing.cpu_count() - 1)  # Leave one core free
+    # Use available CPU cores for any parallel processing
+    max_cores = max(1, multiprocessing.cpu_count() - 1)  # Leave one core free
 
     # Default values
     if pouch_sizes is None:
@@ -209,15 +207,7 @@ def generate_simulation_batch(num_simulations, output_dir, pouch_sizes=None,
         'batch_index': batch_idx
     }
 
-    # Create a dataset manager if requested
-    dataset_manager = None
-    dataset_info = None
-    if create_dataset:
-        dataset_manager = DatasetManager(batch_dir)
-        dataset_info = dataset_manager.create_dataset(
-            name=f"dataset_{batch_idx}",
-            split_ratios=dataset_split_ratios
-        )
+    # Will collect basic statistics at the end if requested
 
     # Process each simulation
     for sim_idx in range(num_simulations):
@@ -246,13 +236,27 @@ def generate_simulation_batch(num_simulations, output_dir, pouch_sizes=None,
 
             # Create the simulation
             sim_name = f"{sim_type.replace(' ', '_')}_{sim_idx}"
+            # Parse image_size string to tuple if it's a string
+            output_size = image_size
+            if isinstance(image_size, str):
+                try:
+                    width, height = map(int, image_size.split('x'))
+                    output_size = (width, height)
+                    print(f"Using custom image size: {width}x{height}")
+                except (ValueError, AttributeError):
+                    # Default to 512x512 if parsing fails
+                    output_size = (512, 512)
+                    print(f"Failed to parse image size '{image_size}', using default 512x512")
+            
+            # Pass jpeg_quality to Pouch constructor
             pouch = Pouch(
                 params=sim_params,
                 size=pouch_size,
                 sim_number=sim_idx,
                 save=True,
                 save_name=sim_name,
-                output_size=(512, 512)
+                output_size=output_size,
+                jpeg_quality=jpeg_quality
             )
 
             # Run simulation
@@ -309,32 +313,33 @@ def generate_simulation_batch(num_simulations, output_dir, pouch_sizes=None,
                         label_data['defect_config'] = defect_config
 
                         # Save image and label
-                        img_filename = f"{sim_name}_t{time_step:05d}.png"
+                        img_filename = f"{sim_name}_t{time_step:05d}.jpg"
                         label_filename = f"{sim_name}_t{time_step:05d}.json"
-                        img_path = save_image(processed_image, img_dir, img_filename)
+                        img_path = save_image(processed_image, img_dir, img_filename, format='jpg', quality=jpeg_quality, target_size=output_size)
                         label_path = save_label(label_data, label_dir, label_filename)
                         image_files.append(img_path)
                         label_files.append(label_path)
 
-                        # Generate and save individual binary masks for each cell
-                        multi_instance_mask = pouch.get_cell_masks()
-                        cell_ids = np.unique(multi_instance_mask)
-                        
-                        for cell_id in cell_ids:
-                            if cell_id == 0:
-                                continue  # Skip background
-                            # Create a binary mask for the current cell instance
-                            instance_mask = (multi_instance_mask == cell_id).astype(np.uint8)
-                            # Multiply by 255 to prepare the mask for saving as PNG
-                            instance_mask = instance_mask * 255
-
-                            # Generate a file name for this instance mask (using cell_id)
-                            mask_filename = f"{sim_name}_t{time_step:05d}_mask_{cell_id:03d}.png"
-                            mask_path = save_image(instance_mask, mask_dir, mask_filename)
-                            mask_files.append(mask_path)
+                        # Generate and save individual binary masks for each cell if requested
+                        if generate_masks:
+                            multi_instance_mask = pouch.get_cell_masks()
+                            cell_ids = np.unique(multi_instance_mask)
                             
-                            # Explicitly delete temporary objects to free memory
-                            del instance_mask
+                            for cell_id in cell_ids:
+                                if cell_id == 0:
+                                    continue  # Skip background
+                                # Create a binary mask for the current cell instance
+                                instance_mask = (multi_instance_mask == cell_id).astype(np.uint8)
+                                # Multiply by 255 to prepare the mask for saving as PNG
+                                instance_mask = instance_mask * 255
+
+                                # Generate a file name for this instance mask (using cell_id)
+                                mask_filename = f"{sim_name}_t{time_step:05d}_mask_{cell_id:03d}.jpg"
+                                mask_path = save_image(instance_mask, mask_dir, mask_filename, format='jpg', quality=jpeg_quality, target_size=output_size)
+                                mask_files.append(mask_path)
+                                
+                                # Explicitly delete temporary objects to free memory
+                                del instance_mask
 
                         # Explicitly delete temporary objects to free memory
                         del clean_image, processed_image, multi_instance_mask
@@ -356,42 +361,42 @@ def generate_simulation_batch(num_simulations, output_dir, pouch_sizes=None,
                 'image_count': len(image_files),
                 'image_dir': img_dir,
                 'label_dir': label_dir,
-                'mask_dir': mask_dir
+                'mask_dir': mask_dir,
+                'pouch': pouch if save_pouch else None
             }
             results['simulations'].append(sim_info)
 
-            # Add to dataset if enabled
-            if create_dataset and dataset_manager is not None:
-                dataset_manager.add_simulation_to_dataset(
-                    image_files, label_files, sim_info, split='random'
-                )
+            # No dataset creation - just continue with next simulation
 
-            # Explicitly delete the pouch object to free memory
-            del pouch
-            gc.collect()
+            # Explicitly delete the pouch object to free memory if not saving
+            if not save_pouch:
+                del pouch
+                gc.collect()
 
         except Exception as e:
             print(f"Error in simulation {sim_idx}: {str(e)}")
             continue  # Skip this simulation but continue with others
 
-    # Generate dataset statistics if enabled
-    if create_dataset and dataset_manager is not None:
-        dataset_stats = dataset_manager.generate_dataset_stats()
-        results['dataset_stats'] = dataset_stats
+    # After all simulations, create the CSV mapping file
+    from utils.labeling import create_dataset_csv_mapping
+    try:
+        csv_path = create_dataset_csv_mapping(batch_dir)
+        print(f"Created image-mask mapping CSV: {csv_path}")
+        results['image_mask_csv'] = csv_path
+    except Exception as e:
+        print(f"Error creating CSV mapping: {str(e)}")
+        results['csv_error'] = str(e)
+
+    # Generate basic statistics
+    if create_stats:
+        stats = generate_stats(batch_dir)
+        results['stats'] = stats
 
     # Save results to file
     try:
+        # Import NumpyEncoder from utils.labeling for consistent JSON handling
+        from utils.labeling import NumpyEncoder
         with open(os.path.join(batch_dir, 'simulation_results.json'), 'w') as f:
-            # Use custom converter for numpy types
-            class NumpyEncoder(json.JSONEncoder):
-                def default(self, obj):
-                    if isinstance(obj, np.integer):
-                        return int(obj)
-                    elif isinstance(obj, np.floating):
-                        return float(obj)
-                    elif isinstance(obj, np.ndarray):
-                        return obj.tolist()
-                    return super(NumpyEncoder, self).default(obj)
             json.dump(results, f, indent=4, cls=NumpyEncoder)
     except Exception as e:
         print(f"Error saving results: {str(e)}")
@@ -408,8 +413,8 @@ def main():
         description="Calcium Ion Dynamic Simulation System")
 
     # Add arguments
-    parser.add_argument('--output', type=str, default='./output',
-                        help='Output directory for simulation results')
+    parser.add_argument('--output', type=str, default='output',
+                        help='Output directory for simulation results (default: output)')
     parser.add_argument('--num_simulations', type=int, default=5,
                         help='Number of simulations to generate')
     parser.add_argument('--pouch_sizes', type=str, nargs='+', choices=['xsmall', 'small', 'medium', 'large'],
@@ -418,8 +423,7 @@ def main():
                         choices=["Single cell spikes", "Intercellular transients",
                                  "Intercellular waves", "Fluttering"],
                         help='Simulation types to use (default: all types)')
-    parser.add_argument('--num_threads', type=int,
-                        help='Number of threads to use for parallel processing')
+    # Removed unused num_threads argument
     parser.add_argument('--gui', action='store_true',
                         help='Launch GUI interface')
     parser.add_argument('--version', action='version', version='Calcium Simulation v1.0',
@@ -461,7 +465,6 @@ def main():
             output_dir=args.output,
             pouch_sizes=args.pouch_sizes,
             sim_types=args.sim_types,
-            num_threads=args.num_threads,
             progress_callback=cli_progress_callback
         )
 

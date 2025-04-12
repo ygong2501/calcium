@@ -12,10 +12,12 @@ A Windows-compatible calcium ion dynamic simulation system designed to generate 
   - Optical propagation defects (radial distortion, chromatic aberration, vignetting)
   - Sensor defects (Poisson noise, readout noise, Gaussian noise)
   - Post-processing defects (defocus blur, dynamic range compression)
-- **Standardized Output**: All images are generated at 512×512 pixel size
+- **Standardized Output**: All images are generated at 512×512 pixel size in JPG format with adjustable quality
 - **Batch Processing**: Generate many simulations with different parameters
 - **Automatic Labeling**: Creates labels for cell activity and parameters
 - **User-friendly GUI**: Visual interface for adjusting parameters and previewing results
+- **Cell Mask Generation**: Creates individual mask images for each active cell
+- **CSV Mapping**: Optional CSV file generation to map between original images and their mask files
 
 ## Mathematical Model
 
@@ -117,6 +119,11 @@ Where:
    - Generate preview images
    - Create videos of calcium dynamics
    - Run batch simulations
+   - Generate cell masks and CSV mappings
+
+3. New Batch Options:
+   - **Generate Masks**: Creates individual masks for each active cell (enabled by default)
+   - **Create CSV File**: Creates a CSV mapping between original images and masks
 
 ### Command-Line Mode
 
@@ -130,7 +137,6 @@ Where:
    - `--num_simulations`: Number of simulations to generate
    - `--pouch_sizes`: List of pouch sizes to use (e.g., 'small medium')
    - `--sim_types`: List of simulation types to use
-   - `--num_threads`: Number of threads to use for parallel processing
    - `--gui`: Launch GUI interface
    - `--version`: Show program version and exit
 
@@ -142,8 +148,8 @@ Where:
    # Generate 10 simulations using only the "Intercellular waves" type
    python main.py --output ./wave_dataset --num_simulations 10 --sim_types "Intercellular waves"
    
-   # Generate 20 simulations using 4 processing threads
-   python main.py --output ./large_dataset --num_simulations 20 --num_threads 4
+   # Generate 20 simulations
+   python main.py --output ./large_dataset --num_simulations 20
    ```
 
 ## Batch Processing Workflow
@@ -168,13 +174,13 @@ The batch processing system allows the generation of large datasets with varied 
      - `/validation` (15% of images)
      - `/test` (15% of images)
    - Each folder contains:
-     - Image files (PNG format)
+     - Image files (JPG format with adjustable quality)
      - JSON label files with detailed simulation parameters
-     - Cell masks for segmentation tasks
+     - Cell masks for segmentation tasks (individual masks per active cell)
 
-4. **Multi-threading**:
-   - Multiple simulations can run in parallel using the `--num_threads` parameter
-   - Each thread handles one complete simulation
+4. **Performance Optimization**:
+   - Memory monitoring to prevent out-of-memory situations during batch processing
+   - Optimized image processing pipeline
    - Progress is tracked and displayed in real-time
 
 5. **Dataset Statistics**:
@@ -182,6 +188,7 @@ The batch processing system allows the generation of large datasets with varied 
      - Number of images in each split
      - Parameter distributions
      - Cell activity statistics
+     - Mask and CSV file information when applicable
 
 ## File Structure
 
@@ -198,13 +205,22 @@ calcium_simulation/
 ├── utils/                 # Utility functions
 │   ├── image_processing.py # Image processing tools
 │   ├── dataset.py         # Dataset management
-│   └── labeling.py        # Label generation
+│   └── labeling.py        # Label generation and CSV mapping
 ├── gui/                   # GUI components
 │   ├── main_window.py     # Main window
 │   ├── settings_panel.py  # Settings panel
-│   └── preview_panel.py   # Preview panel
+│   ├── preview_panel.py   # Preview panel
+│   └── dataset_panel.py   # Dataset creation panel
 ├── geometry/              # Geometry data files
 ├── presets/               # Preset configuration files
+├── output/                # Default output directory
+│   └── simulation_batch_X/ # Each batch directory
+│       ├── simulation_results.json # Results summary
+│       ├── image_mask_mapping.csv  # CSV mapping file (if enabled)
+│       └── [sim_name]/    # Individual simulation folders
+│           ├── images/    # JPG image files
+│           ├── labels/    # JSON label files
+│           └── masks/     # Individual mask images
 └── main.py                # Program entry point
 ```
 
@@ -235,6 +251,20 @@ calcium_simulation/
 - **Vignetting**: Darkening towards image edges
 - **Noise types**: Poisson (intensity-dependent), readout (pattern), Gaussian (random)
 - **Defocus blur**: Global or partial image blurring
+
+### New Features
+
+- **Mask Generation**: Creates individual binary masks for each active cell in the simulation
+  - Each cell gets a separate JPG file with "_mask_XXX" suffix where XXX is the cell ID
+  - Masks are created using the same dimensions as the original images (512×512)
+  - Only generated when "Generate Masks" option is selected in the Batch tab
+  
+- **CSV Mapping**: Creates a CSV file that maps original images to their corresponding mask files
+  - Format: Two columns - "ImageId" and "MaskId"
+  - Handles one-to-many mapping (one source image can have multiple mask images)
+  - Uses a 10-digit zero-padded format for cell IDs to ensure consistent sorting
+  - Provides a clean data format for machine learning training
+  - Created when "Create CSV File" option is selected in the Batch tab
 
 ## License
 

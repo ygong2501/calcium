@@ -171,20 +171,21 @@ def apply_all_defects(image, cells_mask, config):
         contrast = config.get('contrast', 1.0)
         result = adjust_brightness_contrast(result, brightness, contrast)
     
-    # Final resize to ensure 512x512 output
-    result = resize_image(result, (512, 512))
-    
+    # Don't enforce 512x512 - allow dynamic sizing based on Pouch output_size
     return result
 
 
-def save_image(image, output_path, filename):
+def save_image(image, output_path, filename, format='jpg', quality=90, target_size=None):
     """
-    Save image to file.
+    Save image to file, optionally resizing to target size.
     
     Args:
         image (numpy.ndarray): Image to save.
         output_path (str): Output directory.
         filename (str): Filename.
+        format (str): Image format, 'jpg' or 'png'.
+        quality (int): JPEG quality (0-100), higher is better quality. Only used for JPEG format.
+        target_size (tuple, optional): Target size (width, height) to resize image before saving.
     
     Returns:
         str: Full path to saved file.
@@ -197,12 +198,23 @@ def save_image(image, output_path, filename):
     if not os.path.exists(output_path):
         os.makedirs(output_path, exist_ok=True)
     
-    # Ensure filename has extension
-    if not filename.lower().endswith(('.png', '.jpg', '.jpeg')):
-        filename += '.png'
+    # Normalize format to lowercase
+    format = format.lower()
+    
+    # Get the base filename without extension
+    base_filename = os.path.splitext(filename)[0]
+    
+    # Add appropriate extension based on specified format
+    if format == 'jpg' or format == 'jpeg':
+        file_extension = '.jpg'
+    else:
+        file_extension = '.png'
+    
+    # Final filename with correct extension
+    final_filename = base_filename + file_extension
     
     # Full path to output file
-    file_path = os.path.join(output_path, filename)
+    file_path = os.path.join(output_path, final_filename)
     
     # Validate image
     if not isinstance(image, np.ndarray):
@@ -210,6 +222,10 @@ def save_image(image, output_path, filename):
     
     if len(image.shape) not in [2, 3]:
         raise ValueError(f"Unexpected image shape: {image.shape}")
+    
+    # Resize image if target_size is specified
+    if target_size is not None:
+        image = resize_image(image, target_size)
     
     # Convert image to uint8 if needed
     if image.dtype != np.uint8:
@@ -222,10 +238,20 @@ def save_image(image, output_path, filename):
         # Check if grayscale or RGB
         if len(image.shape) == 2 or image.shape[2] == 1:
             # Grayscale image
-            cv2.imwrite(file_path, image)
+            if format == 'jpg' or format == 'jpeg':
+                # For JPG, use compression quality parameter
+                # Compression params for jpg: [cv2.IMWRITE_JPEG_QUALITY, quality, 0]
+                cv2.imwrite(file_path, image, [cv2.IMWRITE_JPEG_QUALITY, quality])
+            else:
+                cv2.imwrite(file_path, image)
         else:
             # RGB image - convert from RGB to BGR for OpenCV
-            cv2.imwrite(file_path, cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+            if format == 'jpg' or format == 'jpeg':
+                # For JPG, use compression quality parameter
+                cv2.imwrite(file_path, cv2.cvtColor(image, cv2.COLOR_RGB2BGR), 
+                           [cv2.IMWRITE_JPEG_QUALITY, quality])
+            else:
+                cv2.imwrite(file_path, cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
         
         return file_path
     except Exception as e:

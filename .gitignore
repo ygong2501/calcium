@@ -51,3 +51,4 @@ ENV/
 .vscode/
 *.swp
 *.swo
+artifacts/__pycache__/optical.cpython-312.pyc

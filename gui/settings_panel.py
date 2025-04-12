@@ -41,11 +41,10 @@ class SettingsPanel:
         self._setup_defect_tab()
         self._setup_batch_tab()
     
-    def _setup_simulation_tab(self):
-        """Setup the simulation settings tab."""
-        # Create a proper scrollable frame with fixed width
+    def _create_scrollable_frame(self, parent):
+        """创建标准的滚动框架并返回"""
         # Container frame
-        container = ttk.Frame(self.sim_tab)
+        container = ttk.Frame(parent)
         container.pack(fill=tk.BOTH, expand=True)
         
         # Canvas with scrollbar
@@ -61,6 +60,11 @@ class SettingsPanel:
             lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
         )
         
+        # Mouse wheel scrolling
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        
         # Make canvas use scrollbar
         canvas.configure(yscrollcommand=scrollbar.set)
         
@@ -72,6 +76,13 @@ class SettingsPanel:
         
         # Then pack canvas to fill remaining space
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        return scrollable_frame
+        
+    def _setup_simulation_tab(self):
+        """Setup the simulation settings tab."""
+        # 使用通用滚动框架创建函数
+        scrollable_frame = self._create_scrollable_frame(self.sim_tab)
         
         # Simulation Type
         ttk.Label(scrollable_frame, text="Simulation Type:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
@@ -128,34 +139,8 @@ class SettingsPanel:
     
     def _setup_defect_tab(self):
         """Setup the defect settings tab."""
-        # Container frame
-        container = ttk.Frame(self.defect_tab)
-        container.pack(fill=tk.BOTH, expand=True)
-        
-        # Canvas with scrollbar
-        canvas = tk.Canvas(container)
-        scrollbar = ttk.Scrollbar(container, orient=tk.VERTICAL, command=canvas.yview)
-        
-        # Scrollable frame inside canvas
-        scrollable_frame = ttk.Frame(canvas)
-        
-        # Configure scrolling
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
-        
-        # Make canvas use scrollbar
-        canvas.configure(yscrollcommand=scrollbar.set)
-        
-        # Create window inside canvas containing the scrollable frame
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        
-        # Pack scrollbar first (right side)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        
-        # Then pack canvas to fill remaining space
-        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        # 使用通用滚动框架创建函数
+        scrollable_frame = self._create_scrollable_frame(self.defect_tab)
         
         # Background Defects Section
         ttk.Label(
@@ -348,34 +333,8 @@ class SettingsPanel:
     
     def _setup_batch_tab(self):
         """Setup the batch generation tab."""
-        # Container frame
-        container = ttk.Frame(self.batch_tab)
-        container.pack(fill=tk.BOTH, expand=True)
-        
-        # Canvas with scrollbar
-        canvas = tk.Canvas(container)
-        scrollbar = ttk.Scrollbar(container, orient=tk.VERTICAL, command=canvas.yview)
-        
-        # Scrollable frame inside canvas
-        scrollable_frame = ttk.Frame(canvas)
-        
-        # Configure scrolling
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
-        
-        # Make canvas use scrollbar
-        canvas.configure(yscrollcommand=scrollbar.set)
-        
-        # Create window inside canvas containing the scrollable frame
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        
-        # Pack scrollbar first (right side)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        
-        # Then pack canvas to fill remaining space
-        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        # 使用通用滚动框架创建函数
+        scrollable_frame = self._create_scrollable_frame(self.batch_tab)
         
         # Number of Simulations
         ttk.Label(scrollable_frame, text="Number of Simulations:").grid(
@@ -454,6 +413,149 @@ class SettingsPanel:
             row=12, column=1, padx=5, pady=2, sticky=tk.W
         )
         
+        # Separator
+        ttk.Separator(scrollable_frame, orient=tk.HORIZONTAL).grid(
+            row=13, column=0, columnspan=2, padx=5, pady=10, sticky=tk.EW
+        )
+        
+        # Image Options Section
+        ttk.Label(
+            scrollable_frame, text="Image Options:", font=("", 10, "bold")
+        ).grid(row=14, column=0, columnspan=2, padx=5, pady=5, sticky=tk.W)
+        
+        # Image Size
+        ttk.Label(scrollable_frame, text="Image Size:").grid(
+            row=15, column=0, padx=5, pady=5, sticky=tk.W
+        )
+        self.image_size_var = tk.StringVar(value="512x512")
+        ttk.Combobox(
+            scrollable_frame, textvariable=self.image_size_var,
+            values=["224x224", "256x256", "512x512", "640x640", "Custom..."],
+            width=15
+        ).grid(row=15, column=1, padx=5, pady=5, sticky=tk.W)
+        
+        # Custom size entry fields (initially hidden)
+        self.custom_size_frame = ttk.Frame(scrollable_frame)
+        self.custom_size_frame.grid(row=16, column=0, columnspan=2, padx=20, pady=2, sticky=tk.W)
+        self.custom_size_frame.grid_remove()  # Hide initially
+        
+        ttk.Label(self.custom_size_frame, text="Width:").grid(row=0, column=0, padx=5, pady=2, sticky=tk.W)
+        self.custom_width_var = tk.StringVar(value="512")
+        ttk.Entry(self.custom_size_frame, textvariable=self.custom_width_var, width=6).grid(
+            row=0, column=1, padx=5, pady=2, sticky=tk.W
+        )
+        
+        ttk.Label(self.custom_size_frame, text="Height:").grid(row=0, column=2, padx=5, pady=2, sticky=tk.W)
+        self.custom_height_var = tk.StringVar(value="512")
+        ttk.Entry(self.custom_size_frame, textvariable=self.custom_height_var, width=6).grid(
+            row=0, column=3, padx=5, pady=2, sticky=tk.W
+        )
+        
+        # Show/hide custom size entry when "Custom..." is selected
+        def on_size_changed(*args):
+            if self.image_size_var.get() == "Custom...":
+                self.custom_size_frame.grid()
+            else:
+                self.custom_size_frame.grid_remove()
+        
+        self.image_size_var.trace("w", on_size_changed)
+        
+        # JPEG Quality slider
+        ttk.Label(scrollable_frame, text="JPEG Quality:").grid(
+            row=17, column=0, padx=5, pady=5, sticky=tk.W
+        )
+        
+        quality_frame = ttk.Frame(scrollable_frame)
+        quality_frame.grid(row=17, column=1, padx=5, pady=5, sticky=tk.W)
+        
+        self.jpeg_quality_var = tk.IntVar(value=90)
+        quality_scale = ttk.Scale(
+            quality_frame, from_=0, to=100, orient=tk.HORIZONTAL, 
+            variable=self.jpeg_quality_var, length=100
+        )
+        quality_scale.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        
+        # Create a label to show the current value
+        quality_label = ttk.Label(quality_frame, text="90")
+        quality_label.pack(side=tk.LEFT, padx=5)
+        
+        # Update label when slider changes
+        def update_quality_label(*args):
+            quality_label.config(text=str(self.jpeg_quality_var.get()))
+        
+        self.jpeg_quality_var.trace("w", update_quality_label)
+        
+        # Separator
+        ttk.Separator(scrollable_frame, orient=tk.HORIZONTAL).grid(
+            row=18, column=0, columnspan=2, padx=5, pady=10, sticky=tk.EW
+        )
+        
+        # Mask Options Section
+        ttk.Label(
+            scrollable_frame, text="Mask Options:", font=("", 10, "bold")
+        ).grid(row=19, column=0, columnspan=2, padx=5, pady=5, sticky=tk.W)
+        
+        # Generate Masks (on by default)
+        self.generate_masks_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            scrollable_frame, text="Generate Masks", variable=self.generate_masks_var
+        ).grid(row=20, column=0, padx=5, pady=2, sticky=tk.W)
+        
+        # Create CSV File
+        self.create_csv_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            scrollable_frame, text="Create CSV File", variable=self.create_csv_var
+        ).grid(row=21, column=0, padx=5, pady=2, sticky=tk.W)
+        
+        # Separator
+        ttk.Separator(scrollable_frame, orient=tk.HORIZONTAL).grid(
+            row=22, column=0, columnspan=2, padx=5, pady=10, sticky=tk.EW
+        )
+        
+        # Video Options Section
+        ttk.Label(
+            scrollable_frame, text="Video Options:", font=("", 10, "bold")
+        ).grid(row=23, column=0, columnspan=2, padx=5, pady=5, sticky=tk.W)
+        
+        # Enable Video Generation checkbox
+        self.enable_video_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            scrollable_frame, text="Enable Video Generation", variable=self.enable_video_var
+        ).grid(row=24, column=0, padx=5, pady=2, sticky=tk.W)
+        
+        # Video Format selection
+        ttk.Label(scrollable_frame, text="Video Format:").grid(row=25, column=0, padx=20, pady=2, sticky=tk.W)
+        self.video_format_var = tk.StringVar(value="mp4")
+        format_frame = ttk.Frame(scrollable_frame)
+        format_frame.grid(row=25, column=1, padx=5, pady=2, sticky=tk.W)
+        ttk.Radiobutton(format_frame, text="MP4", variable=self.video_format_var, value="mp4").pack(side=tk.LEFT, padx=5)
+        ttk.Radiobutton(format_frame, text="AVI", variable=self.video_format_var, value="avi").pack(side=tk.LEFT, padx=5)
+        ttk.Radiobutton(format_frame, text="MOV", variable=self.video_format_var, value="mov").pack(side=tk.LEFT, padx=5)
+        
+        # Frame Rate (FPS)
+        ttk.Label(scrollable_frame, text="Frame Rate (FPS):").grid(row=26, column=0, padx=20, pady=2, sticky=tk.W)
+        self.fps_var = tk.StringVar(value="10")
+        ttk.Combobox(scrollable_frame, textvariable=self.fps_var, values=["5", "10", "15", "24", "30"], width=10).grid(
+            row=26, column=1, padx=5, pady=2, sticky=tk.W
+        )
+        
+        # Frame Skip
+        ttk.Label(scrollable_frame, text="Frame Skip:").grid(row=27, column=0, padx=20, pady=2, sticky=tk.W)
+        self.skip_frames_var = tk.StringVar(value="0")
+        ttk.Entry(scrollable_frame, textvariable=self.skip_frames_var, width=10).grid(
+            row=27, column=1, padx=5, pady=2, sticky=tk.W
+        )
+        
+        # Quality settings
+        ttk.Label(scrollable_frame, text="Quality:").grid(row=28, column=0, padx=20, pady=2, sticky=tk.W)
+        self.quality_var = tk.IntVar(value=23)
+        quality_frame = ttk.Frame(scrollable_frame)
+        quality_frame.grid(row=28, column=1, padx=5, pady=2, sticky=tk.W)
+        
+        ttk.Radiobutton(quality_frame, text="High", variable=self.quality_var, value=18).pack(anchor=tk.W)
+        ttk.Radiobutton(quality_frame, text="Medium", variable=self.quality_var, value=23).pack(anchor=tk.W)
+        ttk.Radiobutton(quality_frame, text="Low", variable=self.quality_var, value=28).pack(anchor=tk.W)
+        
         # No dataset options here - removed to prevent duplication with Dataset Creation tab
         
         # No edge blur options here (moved to defects tab)
@@ -524,12 +626,26 @@ class SettingsPanel:
         self.time_end_var.set("18000")
         self.time_step_size_var.set("200")
         
+        # Image options defaults
+        self.image_size_var.set("512x512")
+        self.custom_width_var.set("512")
+        self.custom_height_var.set("512")
+        self.jpeg_quality_var.set(90)
+        
+        # Mask options defaults
+        self.generate_masks_var.set(True)
+        self.create_csv_var.set(False)
+        
         # Dataset defaults removed
         
-        # Edge blur defaults
-        self.edge_blur_var.set(False)
-        self.blur_kernel_size_var.set("3")
-        self.blur_type_var.set("mean")
+        # Edge blur defaults already set above
+        
+        # Video option defaults
+        self.enable_video_var.set(False)
+        self.video_format_var.set("mp4")
+        self.fps_var.set("10")
+        self.skip_frames_var.set("0")
+        self.quality_var.set(23)
     
     def get_simulation_parameters(self):
         """
@@ -636,7 +752,25 @@ class SettingsPanel:
         
         params['time_steps'] = list(range(time_start, time_end, time_step))
         
-        # Dataset options removed - now handled entirely in Dataset Creation tab
+        # Image options
+        # Handle custom image size if selected
+        if self.image_size_var.get() == "Custom...":
+            try:
+                width = int(self.custom_width_var.get())
+                height = int(self.custom_height_var.get())
+                params['image_size'] = f"{width}x{height}"
+            except ValueError:
+                # Fallback to default if invalid input
+                params['image_size'] = "512x512"
+        else:
+            params['image_size'] = self.image_size_var.get()
+        
+        # JPEG quality
+        params['jpeg_quality'] = self.jpeg_quality_var.get()
+        
+        # Mask options
+        params['generate_masks'] = self.generate_masks_var.get()
+        params['create_csv'] = self.create_csv_var.get()
         
         # Edge blur options are now retrieved from defect configuration
         # to ensure consistency between preview and batch generation
@@ -644,6 +778,16 @@ class SettingsPanel:
         params['edge_blur'] = defect_config.get('edge_blur', False)
         params['blur_kernel_size'] = defect_config.get('blur_kernel_size', 3)
         params['blur_type'] = defect_config.get('blur_type', 'mean')
+        
+        # Video options
+        params['enable_video'] = self.enable_video_var.get()
+        params['video_format'] = self.video_format_var.get()
+        params['video_fps'] = int(self.fps_var.get())
+        try:
+            params['video_skip_frames'] = int(self.skip_frames_var.get())
+        except ValueError:
+            params['video_skip_frames'] = 0
+        params['video_quality'] = self.quality_var.get()
         
         return params
     
@@ -698,7 +842,8 @@ class SettingsPanel:
         
         # Optical defects
         if 'radial_distortion' in config:
-            self.radial_dist_var.set(config['radial_distortion'])
+            # 保留配置兼容性但不设置已移除的变量
+            pass
         if 'chromatic_aberration' in config:
             self.chromatic_ab_var.set(config['chromatic_aberration'])
         if 'vignetting' in config:

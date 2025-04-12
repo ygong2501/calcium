@@ -30,7 +30,7 @@ class Pouch:
     """
     
     def __init__(self, params=None, size='xsmall', sim_number=0, save=False, save_name='default', 
-                 geometry_dir=None, output_size=(512, 512)):
+                 geometry_dir=None, output_size=(512, 512), jpeg_quality=90):
         """
         Initialize the Pouch object.
         
@@ -42,6 +42,7 @@ class Pouch:
             save_name (str): Additional name for saved files.
             geometry_dir (str, optional): Directory containing geometry files.
             output_size (tuple): Size of output images (width, height).
+            jpeg_quality (int): JPEG quality for saving images (0-100).
         """
         # Create characteristics of the pouch object
         self.size = size
@@ -50,6 +51,7 @@ class Pouch:
         self.save = save
         self.param_dict = params
         self.output_size = output_size
+        self.jpeg_quality = jpeg_quality
         
         # If parameters are not set, then use baseline values
         if self.param_dict is None:
@@ -261,7 +263,7 @@ class Pouch:
             blur_type (str): Type of convolution blur ('mean' or 'motion').
             
         Returns:
-            numpy.ndarray: Image array (512×512 pixels).
+            numpy.ndarray: Image array with dimensions specified by self.output_size.
             
         Raises:
             ValueError: If time_step is out of range or parameters are invalid
@@ -406,19 +408,27 @@ class Pouch:
                     # Draw black border lines
                     cv2.polylines(img_data, [points], True, (0, 0, 0), 1)
             
+            # Verify the image size matches the expected output_size
+            if img_data.shape[:2] != (self.output_size[1], self.output_size[0]):
+                print(f"Warning: Generated image size {img_data.shape[:2]} doesn't match expected {(self.output_size[1], self.output_size[0])}")
+                # Resize the image to match the expected output size
+                from utils.image_processing import resize_image
+                img_data = resize_image(img_data, self.output_size)
+                
             # Save if output path specified
             if output_path is not None:
-                output_dir = os.path.dirname(output_path)
-                if output_dir and not os.path.exists(output_dir):
-                    os.makedirs(output_dir, exist_ok=True)
-                cv2.imwrite(output_path, cv2.cvtColor(img_data, cv2.COLOR_RGB2BGR))
+                from utils.image_processing import save_image
+                # Use quality parameter stored in the object
+                quality = self.jpeg_quality
+                # Always use self.output_size to ensure consistent dimensions
+                save_image(img_data, os.path.dirname(output_path), os.path.basename(output_path), format='jpg', quality=quality, target_size=self.output_size)
             
             return img_data
             
         except Exception as e:
             raise RuntimeError(f"Error generating image: {str(e)}")
     
-    def make_animation(self, path=None, fps=10, skip_frames=50):
+    def make_animation(self, path=None, fps=10, skip_frames=50, filename=None, extra_args=None):
         """
         Create animation of calcium dynamics.
         
@@ -426,6 +436,8 @@ class Pouch:
             path (str, optional): Path to save the animation.
             fps (int): Frames per second for the animation.
             skip_frames (int): Number of frames to skip between each animation frame.
+            filename (str, optional): Custom filename for the output video.
+            extra_args (list, optional): Extra arguments to pass to the ffmpeg writer.
         """
         # This version is similar to the original but outputs to a standard size
         colormap = plt.cm.gray
@@ -479,15 +491,34 @@ class Pouch:
             blit=True
         )
         
-        if self.save and path is not None:
+        if path is not None:
             if not os.path.exists(path):
                 os.makedirs(path)
             
-            output_file = os.path.join(
-                path, 
-                f"{self.size}Disc_{self.sim_number}_{self.save_name}.mp4"
-            )
-            anim.save(output_file, writer='ffmpeg', fps=fps)
+            # Determine output filename
+            if filename is None:
+                # Use default naming pattern
+                output_file = os.path.join(
+                    path, 
+                    f"{self.size}Disc_{self.sim_number}_{self.save_name}.mp4"
+                )
+            else:
+                # Use provided filename
+                output_file = os.path.join(path, filename)
+            
+            # Configure FFmpeg writer with appropriate arguments
+            if extra_args is None:
+                # Default FFmpeg writer
+                writer = animation.FFMpegWriter(fps=fps)
+            else:
+                # Custom FFmpeg arguments
+                writer = animation.FFMpegWriter(
+                    fps=fps,
+                    extra_args=extra_args
+                )
+            
+            # Save animation with configured writer
+            anim.save(output_file, writer=writer)
         
         return anim
     
@@ -623,9 +654,10 @@ class Pouch:
             
             output_file = os.path.join(
                 path, 
-                f"{self.size}Disc_VPLCProfile_{self.sim_number}_{self.save_name}.png"
+                f"{self.size}Disc_VPLCProfile_{self.sim_number}_{self.save_name}.jpg"
             )
-            cv2.imwrite(output_file, cv2.cvtColor(img_data, cv2.COLOR_RGB2BGR))
+            from utils.image_processing import save_image
+            save_image(img_data, path, os.path.basename(output_file), format='jpg', quality=self.jpeg_quality)
             
         # Return the image data
         return img_data
@@ -657,6 +689,8 @@ class Pouch:
     def generate_label_data(self, time_step, threshold=0.1):
         """
         Generate label data for the current time step.
+        This method is deprecated - use utils.labeling.generate_labels instead.
+        Kept for backward compatibility.
         
         Args:
             time_step (int): Time step.
@@ -665,18 +699,6 @@ class Pouch:
         Returns:
             dict: Label data dictionary including active cells and their activity levels.
         """
-        # Get active cells
-        activity = self.disc_dynamics[:, 0, time_step]
-        active_cells = np.where(activity > threshold)[0]
-        
-        # Create label data
-        label_data = {
-            'active_cells': active_cells.tolist(),
-            'activity_levels': activity[active_cells].tolist(),
-            'time_step': time_step,
-            'simulation_id': self.sim_number,
-            'simulation_type': self.save_name,
-            'pouch_size': self.size
-        }
-        
-        return label_data
+        # Use the more complete implementation from utils.labeling
+        from utils.labeling import generate_labels
+        return generate_labels(self, time_step, threshold)
