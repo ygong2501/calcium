@@ -214,9 +214,12 @@ def save_label(label_data, output_path, filename):
     return file_path
 
 
-def create_csv_mapping(image_files, mask_files, output_path, filename="image_mask_mapping.csv"):
+def create_csv_mapping(image_files, mask_files, output_path, filename="train.csv"):
     """
-    Create a CSV file mapping original images to their mask files.
+    Create a CSV file mapping original images to their combined mask files.
+    Each image is mapped to a single mask file (the combined mask).
+    Only exact matches (where mask has corresponding image) are included.
+    Removes duplicate image-mask pairs to ensure 1:1 mapping.
     
     Args:
         image_files (list): List of original image file paths.
@@ -238,28 +241,38 @@ def create_csv_mapping(image_files, mask_files, output_path, filename="image_mas
     # Full path to output file
     file_path = os.path.join(output_path, filename)
     
-    # Create a mapping of images to masks
-    image_to_masks = {}
-    
-    # Extract base filenames from full paths
+    # Convert image paths to base filenames for quick lookup
+    image_basenames = set()
+    image_dict = {}
     for img_path in image_files:
         img_basename = os.path.basename(img_path)
-        # Use the complete filename with extension as the ImageId
-        image_to_masks[img_basename] = []
+        image_basenames.add(img_basename)
+        image_dict[img_basename] = img_path
     
-    # Find all masks for each image
+    # Find valid image-mask pairs, using a dict to ensure each image has only one mask
+    # This prevents duplicate entries in the CSV
+    image_to_mask_dict = {}
+    
+    # Process masks
     for mask_path in mask_files:
         mask_basename = os.path.basename(mask_path)
-        # Extract original image name from mask name
-        # Example: "Intercellular_waves_42_t00050_mask_007.jpg" -> "Intercellular_waves_42_t00050.jpg"
-        match = re.match(r'(.+?)_mask_\d+(\.\w+)$', mask_basename)
+        # Updated pattern to match both old and new naming conventions (with batch ID)
+        match = re.match(r'(.+?)_\d{14}_mask_combined(\.\w+)$', mask_basename)
+        if not match:
+            # Try old pattern as fallback
+            match = re.match(r'(.+?)_mask_combined(\.\w+)$', mask_basename)
+        
         if match:
             img_key_base = match.group(1)
             img_extension = match.group(2)
             img_key = f"{img_key_base}{img_extension}"
             
-            if img_key in image_to_masks:
-                image_to_masks[img_key].append(mask_basename)
+            # Only add the pair if the corresponding image exists
+            if img_key in image_basenames and img_key not in image_to_mask_dict:
+                image_to_mask_dict[img_key] = mask_basename
+    
+    # Convert to list of pairs for sorting
+    valid_pairs = list(image_to_mask_dict.items())
     
     # Write the CSV file with the direct filename mapping
     with open(file_path, 'w', newline='') as f:
@@ -267,59 +280,143 @@ def create_csv_mapping(image_files, mask_files, output_path, filename="image_mas
         # Write header
         writer.writerow(["ImageId", "MaskId"])
         
-        # Write data rows using complete filenames
-        for img_key, masks in image_to_masks.items():
-            # If no masks, continue to next image
-            if not masks:
-                continue
-                
-            # For each mask of this image, write a row
-            for mask_name in masks:
-                writer.writerow([img_key, mask_name])
+        # Sort the pairs for consistency
+        valid_pairs.sort()
+        
+        # Write data rows
+        for img_key, mask_name in valid_pairs:
+            writer.writerow([img_key, mask_name])
+    
+    # Report statistics
+    print(f"CSV mapping created with {len(valid_pairs)} valid image-mask pairs")
+    print(f"Total unique images: {len(image_basenames)}")
+    print(f"Total masks files: {len(mask_files)}")
+    print(f"Duplicate entries removed: {len(mask_files) - len(valid_pairs)}")
     
     return file_path
 
 
-def create_dataset_csv_mapping(batch_dir, filename="image_mask_mapping.csv"):
+def create_dataset_csv_mapping(batch_dir, filename="train.csv"):
     """
-    Create a CSV file mapping original images to their mask files for an entire dataset.
-    This function scans the batch directory to find all images and masks.
+    Create a CSV file mapping original images to their combined mask files for an entire dataset.
+    This function directly scans the images and masks directories.
     
     Args:
-        batch_dir (str): Base directory containing simulation results.
+        batch_dir (str): Base directory containing the images and masks directories.
         filename (str, optional): CSV filename.
     
     Returns:
         str: Full path to saved CSV file.
     """
-    # Find all simulation directories
-    sim_dirs = [d for d in os.listdir(batch_dir) 
-                if os.path.isdir(os.path.join(batch_dir, d)) and not d.startswith('.')]
+    # Directly use the images and masks directories
+    img_dir = os.path.join(batch_dir, 'images')
+    mask_dir = os.path.join(batch_dir, 'masks')
     
     all_images = []
     all_masks = []
     
-    # Find all images and masks
-    for sim_dir in sim_dirs:
-        sim_path = os.path.join(batch_dir, sim_dir)
-        img_dir = os.path.join(sim_path, 'images')
-        mask_dir = os.path.join(sim_path, 'masks')
-        
-        # Skip if directories don't exist
-        if not os.path.exists(img_dir) or not os.path.exists(mask_dir):
-            continue
-        
-        # Find all image files (both jpg and png)
-        images = glob.glob(os.path.join(img_dir, '*.jpg')) + glob.glob(os.path.join(img_dir, '*.png'))
-        masks = glob.glob(os.path.join(mask_dir, '*_mask_*.jpg')) + glob.glob(os.path.join(mask_dir, '*_mask_*.png'))
-        
-        all_images.extend(images)
-        all_masks.extend(masks)
+    # Check if directories exist
+    if not os.path.exists(img_dir) or not os.path.exists(mask_dir):
+        print(f"Warning: Image or mask directory not found in {batch_dir}")
+        return os.path.join(batch_dir, filename)
+    
+    # Find all image files (both jpg and png)
+    images = glob.glob(os.path.join(img_dir, '*.jpg')) + glob.glob(os.path.join(img_dir, '*.png'))
+    
+    # Only look for combined mask files (ending with _mask_combined.jpg/png)
+    masks = glob.glob(os.path.join(mask_dir, '*_mask_combined.jpg')) + glob.glob(os.path.join(mask_dir, '*_mask_combined.png'))
+    
+    all_images.extend(images)
+    all_masks.extend(masks)
     
     # Create the mapping if we found images and masks
     if all_images and all_masks:
         return create_csv_mapping(all_images, all_masks, batch_dir, filename)
     else:
-        print(f"Warning: No images or masks found in {batch_dir} (Images: {len(all_images)}, Masks: {len(all_masks)})")
+        print(f"Warning: No images or combined masks found in {batch_dir} (Images: {len(all_images)}, Masks: {len(all_masks)})")
         # Return a dummy file path as the CSV wasn't created
         return os.path.join(batch_dir, filename)
+
+
+def append_to_existing_csv(batch_dir, existing_csv_path):
+    """
+    Append new image-mask mappings to an existing CSV file.
+    
+    Args:
+        batch_dir (str): Base directory containing the images and masks directories.
+        existing_csv_path (str): Path to the existing CSV file.
+    
+    Returns:
+        str: Full path to the updated CSV file.
+    """
+    # Get current mappings from the existing CSV
+    existing_mappings = set()
+    with open(existing_csv_path, 'r', newline='') as f:
+        reader = csv.reader(f)
+        # Skip header
+        next(reader, None)
+        for row in reader:
+            if len(row) >= 2:
+                existing_mappings.add((row[0], row[1]))
+    
+    # Find new image-mask pairs
+    img_dir = os.path.join(batch_dir, 'images')
+    mask_dir = os.path.join(batch_dir, 'masks')
+    
+    # Check if directories exist
+    if not os.path.exists(img_dir) or not os.path.exists(mask_dir):
+        print(f"Warning: Image or mask directory not found in {batch_dir}")
+        return existing_csv_path
+    
+    # Find all image files (both jpg and png)
+    images = glob.glob(os.path.join(img_dir, '*.jpg')) + glob.glob(os.path.join(img_dir, '*.png'))
+    
+    # Only look for combined mask files (ending with _mask_combined.jpg/png)
+    masks = glob.glob(os.path.join(mask_dir, '*_mask_combined.jpg')) + glob.glob(os.path.join(mask_dir, '*_mask_combined.png'))
+    
+    # Create image-to-mask dict with all image paths
+    image_basenames = set()
+    image_dict = {}
+    for img_path in images:
+        img_basename = os.path.basename(img_path)
+        image_basenames.add(img_basename)
+        image_dict[img_basename] = img_path
+    
+    # Find valid image-mask pairs, ensure no duplicates
+    new_pairs = []
+    
+    # Process masks
+    for mask_path in masks:
+        mask_basename = os.path.basename(mask_path)
+        # Updated pattern to match both old and new naming conventions (with batch ID)
+        match = re.match(r'(.+?)_\d{14}_mask_combined(\.\w+)$', mask_basename)
+        if not match:
+            # Try old pattern as fallback
+            match = re.match(r'(.+?)_mask_combined(\.\w+)$', mask_basename)
+        
+        if match:
+            img_key_base = match.group(1)
+            img_extension = match.group(2)
+            img_key = f"{img_key_base}{img_extension}"
+            
+            # Only add the pair if the corresponding image exists
+            if img_key in image_basenames:
+                pair = (img_key, mask_basename)
+                # Only add if not already in existing mappings
+                if pair not in existing_mappings:
+                    new_pairs.append(pair)
+    
+    # Append new pairs to the existing CSV
+    with open(existing_csv_path, 'a', newline='') as f:
+        writer = csv.writer(f)
+        
+        # Write new data rows
+        for img_key, mask_name in sorted(new_pairs):
+            writer.writerow([img_key, mask_name])
+    
+    # Report statistics
+    print(f"CSV mapping updated with {len(new_pairs)} new image-mask pairs")
+    print(f"Total existing mappings: {len(existing_mappings)}")
+    print(f"Total mappings now: {len(existing_mappings) + len(new_pairs)}")
+    
+    return existing_csv_path

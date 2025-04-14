@@ -559,6 +559,41 @@ class SettingsPanel:
         # No dataset options here - removed to prevent duplication with Dataset Creation tab
         
         # No edge blur options here (moved to defects tab)
+        
+        # Separator for Multi-batch section
+        ttk.Separator(scrollable_frame, orient=tk.HORIZONTAL).grid(
+            row=29, column=0, columnspan=2, padx=5, pady=10, sticky=tk.EW
+        )
+        
+        # Multi-batch section
+        ttk.Label(
+            scrollable_frame, text="Multi-Batch Generation:", font=("", 10, "bold")
+        ).grid(row=30, column=0, columnspan=2, padx=5, pady=5, sticky=tk.W)
+        
+        # Enable multi-batch
+        self.enable_multi_batch_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            scrollable_frame, text="Enable Multi-Batch Processing", 
+            variable=self.enable_multi_batch_var
+        ).grid(row=31, column=0, columnspan=2, padx=5, pady=5, sticky=tk.W)
+        
+        # Batches
+        ttk.Label(scrollable_frame, text="Number of Batches:").grid(
+            row=32, column=0, padx=5, pady=5, sticky=tk.W
+        )
+        self.num_batches_var = tk.StringVar(value="4")
+        ttk.Entry(scrollable_frame, textvariable=self.num_batches_var, width=10).grid(
+            row=32, column=1, padx=5, pady=5, sticky=tk.W
+        )
+        
+        # Simulations per batch
+        ttk.Label(scrollable_frame, text="Simulations per Batch:").grid(
+            row=33, column=0, padx=5, pady=5, sticky=tk.W
+        )
+        self.sims_per_batch_var = tk.StringVar(value="10")
+        ttk.Entry(scrollable_frame, textvariable=self.sims_per_batch_var, width=10).grid(
+            row=33, column=1, padx=5, pady=5, sticky=tk.W
+        )
     
     def load_default_values(self):
         """Load default values for all settings."""
@@ -625,6 +660,11 @@ class SettingsPanel:
         self.time_start_var.set("0")
         self.time_end_var.set("18000")
         self.time_step_size_var.set("200")
+        
+        # Multi-batch defaults
+        self.enable_multi_batch_var.set(False)
+        self.num_batches_var.set("4")
+        self.sims_per_batch_var.set("10")
         
         # Image options defaults
         self.image_size_var.set("512x512")
@@ -787,6 +827,18 @@ class SettingsPanel:
             params['video_skip_frames'] = int(self.skip_frames_var.get())
         except ValueError:
             params['video_skip_frames'] = 0
+            
+        # Multi-batch options
+        params['enable_multi_batch'] = self.enable_multi_batch_var.get()
+        try:
+            params['num_batches'] = int(self.num_batches_var.get())
+        except ValueError:
+            params['num_batches'] = 1
+            
+        try:
+            params['sims_per_batch'] = int(self.sims_per_batch_var.get())
+        except ValueError:
+            params['sims_per_batch'] = 10
         params['video_quality'] = self.quality_var.get()
         
         return params

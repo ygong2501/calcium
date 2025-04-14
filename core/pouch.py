@@ -662,14 +662,36 @@ class Pouch:
         # Return the image data
         return img_data
     
-    def get_cell_masks(self):
+    def get_cell_masks(self, active_only=False, time_step=None, threshold=0.1):
         """
         Get cell masks for labeling.
         
+        Args:
+            active_only (bool): If True, only return masks for active cells.
+            time_step (int): Time step to check for active cells. Required if active_only is True.
+            threshold (float): Activity threshold for determining active cells.
+        
         Returns:
-            numpy.ndarray: Array where each pixel value corresponds to a cell ID.
+            numpy.ndarray: Array where each pixel value corresponds to a cell ID,
+                           or 0 for inactive cells if active_only=True.
         """
-        return self.cells_mask.copy()
+        # Return all cell masks
+        if not active_only:
+            return self.cells_mask.copy()
+        
+        # Validate parameters for active cell filtering
+        if time_step is None:
+            raise ValueError("time_step must be provided when active_only=True")
+        
+        # Get active cells
+        active_cells = self.get_active_cells(time_step, threshold)
+        
+        # Create a filtered mask with only active cells
+        filtered_mask = np.zeros_like(self.cells_mask)
+        for cell_id in active_cells:
+            filtered_mask[self.cells_mask == cell_id + 1] = cell_id + 1
+            
+        return filtered_mask
     
     def get_active_cells(self, time_step, threshold=0.1):
         """

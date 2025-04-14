@@ -1,54 +1,72 @@
-# Python
+# Python cache files
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
+.pytest_cache/
+
+# Python environments
 env/
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-*.egg-info/
-.installed.cfg
-*.egg
-
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# Output files
-output/
-
-# Geometry files
-geometry/*
-
-# Exclude the .gitkeep file
-!geometry/.gitkeep
-
-# Operating system files
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
-
-# Virtual environments
 venv/
 ENV/
 .env
+*.env
 
-# IDE files
+# Generated output
+output/
+*/test_output/
+*.csv
+
+# Geometry files (excluding presets)
+geometry/*
+!geometry/.gitkeep
+
+# Compressed files
+*.7z
+*.gz
+*.tar
+*.zip
+*.rar
+
+# Jupyter notebook checkpoints
+.ipynb_checkpoints/
+
+# IDE and editor files
 .idea/
 .vscode/
 *.swp
 *.swo
-artifacts/__pycache__/optical.cpython-312.pyc
+*~
+.DS_Store
+Thumbs.db
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+.DS_Store?
+._*
+
+# Logs and temporary files
+logs/
+*.log
+*.tmp
+temp/
+.cache/
+.coverage
+htmlcov/
+coverage.xml
+.coverage.*
+
+# Keep presets directory and its contents
+!presets/
+!presets/**
+
+# Backup files
+.backup/
+*.bak
+*~
+*.old
+*.orig
+
+# Keep the .gitignore file itself
+!.gitignore

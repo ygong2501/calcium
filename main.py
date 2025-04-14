@@ -20,6 +20,7 @@ import gc
 import re
 import psutil
 import tkinter as tk
+import cv2
 
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -142,9 +143,9 @@ def monitor_memory():
 def generate_simulation_batch(num_simulations, output_dir, pouch_sizes=None,
                               sim_types=None, time_steps=None, defect_configs=None,
                               progress_callback=None,
-                              memory_threshold=85, create_stats=True, 
+                              memory_threshold=70, create_stats=True, 
                               edge_blur=False, blur_kernel_size=3, blur_type='mean',
-                              generate_masks=True, image_size="512x512", jpeg_quality=90,
+                              generate_masks=True, generate_labels=False, image_size="512x512", jpeg_quality=90,
                               save_pouch=False):
     """
     Batch generate simulation images, labels, and individual binary masks for each cell.
@@ -193,18 +194,32 @@ def generate_simulation_batch(num_simulations, output_dir, pouch_sizes=None,
         # Select a subset of frames for efficiency
         time_steps = list(range(0, 18000, 200))  # Every 40 seconds
 
-    # Get the next batch index for folder naming
-    batch_idx = get_next_batch_index(output_dir)
-    batch_name = f"simulation_batch_{batch_idx}"
-    batch_dir = os.path.join(output_dir, batch_name)
+    # Use the output directory directly instead of creating batch subdirectories
+    batch_dir = output_dir
     os.makedirs(batch_dir, exist_ok=True)
+    
+    # Generate a unique run identifier for this batch
+    import datetime
+    batch_run_id = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+    
+    # Create common directories for all simulations
+    common_img_dir = os.path.join(batch_dir, 'images')
+    common_mask_dir = os.path.join(batch_dir, 'masks')
+    os.makedirs(common_img_dir, exist_ok=True)
+    os.makedirs(common_mask_dir, exist_ok=True)
+    
+    # Only create labels directory if needed
+    common_label_dir = None
+    if generate_labels:
+        common_label_dir = os.path.join(batch_dir, 'labels')
+        os.makedirs(common_label_dir, exist_ok=True)
     
     # Results to return
     results = {
         'simulations': [],
         'output_dir': batch_dir,
         'num_simulations': num_simulations,
-        'batch_index': batch_idx
+        'batch_index': 0  # No longer using batch indices
     }
 
     # Will collect basic statistics at the end if requested
@@ -263,14 +278,10 @@ def generate_simulation_batch(num_simulations, output_dir, pouch_sizes=None,
             print(f"Running simulation {sim_idx+1}/{num_simulations}: {sim_type} on {pouch_size} pouch")
             pouch.simulate()
 
-            # Create directories for this simulation
-            sim_dir = os.path.join(batch_dir, sim_name)
-            img_dir = os.path.join(sim_dir, 'images')
-            label_dir = os.path.join(sim_dir, 'labels')
-            mask_dir = os.path.join(sim_dir, 'masks')
-            os.makedirs(img_dir, exist_ok=True)
-            os.makedirs(label_dir, exist_ok=True)
-            os.makedirs(mask_dir, exist_ok=True)
+            # Use common directories for all simulations
+            img_dir = common_img_dir
+            label_dir = common_label_dir
+            mask_dir = common_mask_dir
 
             # Generate images, labels, and masks for each time step
             image_files = []
@@ -308,48 +319,80 @@ def generate_simulation_batch(num_simulations, output_dir, pouch_sizes=None,
                             defect_config
                         )
 
-                        # Generate labels
-                        label_data = generate_labels(pouch, time_step)
-                        label_data['defect_config'] = defect_config
-
-                        # Save image and label
-                        img_filename = f"{sim_name}_t{time_step:05d}.jpg"
-                        label_filename = f"{sim_name}_t{time_step:05d}.json"
+                        # Use consistent naming pattern for images and masks
+                        # Format: {sim_name}_t{time_step}_{batch_run_id}.jpg
+                        batch_id_suffix = f"_{batch_run_id}"
+                        img_filename = f"{sim_name}_t{time_step:05d}{batch_id_suffix}.jpg"
                         img_path = save_image(processed_image, img_dir, img_filename, format='jpg', quality=jpeg_quality, target_size=output_size)
-                        label_path = save_label(label_data, label_dir, label_filename)
                         image_files.append(img_path)
-                        label_files.append(label_path)
+                        
+                        # Generate and save labels only if requested
+                        if generate_labels and common_label_dir is not None:
+                            label_data = generate_labels(pouch, time_step)
+                            label_data['defect_config'] = defect_config
+                            label_filename = f"{sim_name}_t{time_step:05d}.json"
+                            label_path = save_label(label_data, common_label_dir, label_filename)
+                            label_files.append(label_path)
 
-                        # Generate and save individual binary masks for each cell if requested
+                        # Generate and save only the combined mask if requested
                         if generate_masks:
-                            multi_instance_mask = pouch.get_cell_masks()
-                            cell_ids = np.unique(multi_instance_mask)
+                            # Get active cells for the current time step
+                            active_cells = pouch.get_active_cells(time_step)
                             
-                            for cell_id in cell_ids:
-                                if cell_id == 0:
-                                    continue  # Skip background
-                                # Create a binary mask for the current cell instance
-                                instance_mask = (multi_instance_mask == cell_id).astype(np.uint8)
-                                # Multiply by 255 to prepare the mask for saving as PNG
-                                instance_mask = instance_mask * 255
-
-                                # Generate a file name for this instance mask (using cell_id)
-                                mask_filename = f"{sim_name}_t{time_step:05d}_mask_{cell_id:03d}.jpg"
-                                mask_path = save_image(instance_mask, mask_dir, mask_filename, format='jpg', quality=jpeg_quality, target_size=output_size)
-                                mask_files.append(mask_path)
+                            # Create a combined mask for all active cells (or a blank mask if no active cells)
+                            # Initialize a blank mask with the same size as the output image
+                            width, height = output_size
+                            combined_mask = np.zeros((height, width), dtype=np.uint8)
+                            
+                            # Only generate mask if there are active cells
+                            if active_cells:
+                                # Get masks with only active cells
+                                multi_instance_mask = pouch.get_cell_masks(active_only=True, time_step=time_step)
+                                cell_ids = np.unique(multi_instance_mask)
                                 
-                                # Explicitly delete temporary objects to free memory
-                                del instance_mask
+                                for cell_id in cell_ids:
+                                    if cell_id == 0:
+                                        continue  # Skip background
+                                    # Create a binary mask for the current cell instance
+                                    instance_mask = (multi_instance_mask == cell_id).astype(np.uint8)
+                                    # Multiply by 255 to prepare the mask for saving
+                                    instance_mask = instance_mask * 255
+                                    
+                                    # Add this mask to the combined mask using bitwise OR
+                                    combined_mask = cv2.bitwise_or(combined_mask, instance_mask)
+                                    
+                                    # Explicitly delete temporary objects to free memory
+                                    del instance_mask
+                            
+                            # Save the combined mask with the same base filename as the image (including batch run ID)
+                            # Format: {sim_name}_t{time_step}_{batch_run_id}_mask_combined.jpg
+                            combined_mask_filename = f"{sim_name}_t{time_step:05d}{batch_id_suffix}_mask_combined.jpg"
+                            combined_mask_path = save_image(combined_mask, mask_dir, combined_mask_filename, format='jpg', quality=jpeg_quality, target_size=output_size)
+                            mask_files.append(combined_mask_path)
+                            
+                            # Free memory
+                            del combined_mask
 
                         # Explicitly delete temporary objects to free memory
-                        del clean_image, processed_image, multi_instance_mask
+                        del clean_image, processed_image
+                        if 'multi_instance_mask' in locals():
+                            del multi_instance_mask
                         
                     except Exception as e:
                         print(f"Error processing time step {time_step} for simulation {sim_idx}: {str(e)}")
+                        # Add more detailed error information
+                        import traceback
+                        print(f"Detailed error information:")
+                        traceback.print_exc()
+                        
+                        # Force garbage collection after an error
+                        gc.collect()
                         continue  # Skip this time step but continue with others
                 
-                # Periodic garbage collection after each batch of time steps
+                # More aggressive memory cleanup after each batch
                 gc.collect()
+                # Give the system a moment to actually release memory
+                time.sleep(0.2)
 
             # Add simulation info to results
             sim_info = {
@@ -359,11 +402,16 @@ def generate_simulation_batch(num_simulations, output_dir, pouch_sizes=None,
                 'pouch_size': pouch_size,
                 'parameters': sim_params,
                 'image_count': len(image_files),
-                'image_dir': img_dir,
-                'label_dir': label_dir,
-                'mask_dir': mask_dir,
+                'image_dir': common_img_dir,
+                'mask_dir': common_mask_dir,
                 'pouch': pouch if save_pouch else None
             }
+            
+            # Add label directory only if labels were generated
+            if generate_labels and common_label_dir is not None:
+                sim_info['label_dir'] = common_label_dir
+                sim_info['label_count'] = len(label_files)
+            
             results['simulations'].append(sim_info)
 
             # No dataset creation - just continue with next simulation
@@ -371,20 +419,32 @@ def generate_simulation_batch(num_simulations, output_dir, pouch_sizes=None,
             # Explicitly delete the pouch object to free memory if not saving
             if not save_pouch:
                 del pouch
-                gc.collect()
+                # Force a full garbage collection
+                for _ in range(3):  # Multiple GC passes
+                    gc.collect()
+                    time.sleep(0.5)  # Give system time to release memory
 
         except Exception as e:
             print(f"Error in simulation {sim_idx}: {str(e)}")
             continue  # Skip this simulation but continue with others
 
-    # After all simulations, create the CSV mapping file
-    from utils.labeling import create_dataset_csv_mapping
+    # After all simulations, create/update the CSV mapping file
+    from utils.labeling import create_dataset_csv_mapping, append_to_existing_csv
     try:
-        csv_path = create_dataset_csv_mapping(batch_dir)
-        print(f"Created image-mask mapping CSV: {csv_path}")
+        # Check if a train.csv already exists
+        existing_csv_path = os.path.join(batch_dir, "train.csv")
+        if os.path.exists(existing_csv_path):
+            # Append to existing CSV file
+            csv_path = append_to_existing_csv(batch_dir, existing_csv_path)
+            print(f"Updated existing CSV mapping: {csv_path}")
+        else:
+            # Create new CSV file
+            csv_path = create_dataset_csv_mapping(batch_dir, filename="train.csv")
+            print(f"Created new CSV mapping: {csv_path}")
+        
         results['image_mask_csv'] = csv_path
     except Exception as e:
-        print(f"Error creating CSV mapping: {str(e)}")
+        print(f"Error creating/updating CSV mapping: {str(e)}")
         results['csv_error'] = str(e)
 
     # Generate basic statistics
@@ -426,6 +486,10 @@ def main():
     # Removed unused num_threads argument
     parser.add_argument('--gui', action='store_true',
                         help='Launch GUI interface')
+    parser.add_argument('--generate-labels', action='store_true',
+                        help='Generate JSON label files (default: False)')
+    parser.add_argument('--max-time-steps', type=int, default=None,
+                        help='Maximum number of time steps to process (default: all)')
     parser.add_argument('--version', action='version', version='Calcium Simulation v1.0',
                         help='Show program version and exit')
 
@@ -460,12 +524,21 @@ def main():
     start_time = time.time()
 
     try:
+        # Prepare time steps if max_time_steps is specified
+        time_steps = None
+        if args.max_time_steps is not None:
+            # Generate a subset of time steps up to the max
+            time_steps = list(range(0, min(18000, args.max_time_steps), 200))
+            print(f"Limited to {len(time_steps)} time steps (max {args.max_time_steps})")
+            
         results = generate_simulation_batch(
             num_simulations=args.num_simulations,
             output_dir=args.output,
             pouch_sizes=args.pouch_sizes,
             sim_types=args.sim_types,
-            progress_callback=cli_progress_callback
+            time_steps=time_steps,
+            progress_callback=cli_progress_callback,
+            generate_labels=args.generate_labels
         )
 
         # Print statistics
