@@ -428,23 +428,34 @@ def generate_simulation_batch(num_simulations, output_dir, pouch_sizes=None,
             print(f"Error in simulation {sim_idx}: {str(e)}")
             continue  # Skip this simulation but continue with others
 
-    # After all simulations, create/update the CSV mapping file
-    from utils.labeling import create_dataset_csv_mapping, append_to_existing_csv
+    # After all simulations, create/update the CSV mapping file using the new generator
+    from utils.generate_csv import generate_image_mask_mapping
     try:
-        # Check if a train.csv already exists
-        existing_csv_path = os.path.join(batch_dir, "train.csv")
-        if os.path.exists(existing_csv_path):
-            # Append to existing CSV file
-            csv_path = append_to_existing_csv(batch_dir, existing_csv_path)
-            print(f"Updated existing CSV mapping: {csv_path}")
+        # Generate the CSV mapping
+        csv_path = generate_image_mask_mapping(batch_dir, csv_filename="train.csv")
+        if csv_path:
+            print(f"Created CSV mapping: {csv_path}")
+            results['image_mask_csv'] = csv_path
+            
+            # Rename to train.csv if it's a different name
+            if os.path.basename(csv_path) != "train.csv":
+                try:
+                    standard_csv_path = os.path.join(batch_dir, "train.csv")
+                    # Try to ensure we can overwrite
+                    if os.path.exists(standard_csv_path):
+                        os.chmod(standard_csv_path, 0o666)
+                    # Copy instead of move to avoid permission issues
+                    import shutil
+                    shutil.copy2(csv_path, standard_csv_path)
+                    print(f"Copied to standard name: {standard_csv_path}")
+                    results['image_mask_csv'] = standard_csv_path
+                except Exception as rename_error:
+                    print(f"Warning: Could not rename CSV file: {rename_error}")
         else:
-            # Create new CSV file
-            csv_path = create_dataset_csv_mapping(batch_dir, filename="train.csv")
-            print(f"Created new CSV mapping: {csv_path}")
-        
-        results['image_mask_csv'] = csv_path
+            print("Failed to create CSV mapping")
+            results['csv_error'] = "Failed to create CSV mapping"
     except Exception as e:
-        print(f"Error creating/updating CSV mapping: {str(e)}")
+        print(f"Error creating CSV mapping: {str(e)}")
         results['csv_error'] = str(e)
 
     # Generate basic statistics

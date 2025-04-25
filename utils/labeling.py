@@ -256,10 +256,17 @@ def create_csv_mapping(image_files, mask_files, output_path, filename="train.csv
     # Process masks
     for mask_path in mask_files:
         mask_basename = os.path.basename(mask_path)
-        # Updated pattern to match both old and new naming conventions (with batch ID)
-        match = re.match(r'(.+?)_\d{14}_mask_combined(\.\w+)$', mask_basename)
+        
+        # Pattern to match: {sim_name}_t{time_step}_{batch_run_id}_mask_combined.jpg
+        # Example: Intercellular_transients_0_t00000_20250413231243_mask_combined.jpg
+        
+        # Try to match the new pattern with timestamp
+        match = re.match(r'(.+?_t\d{5})_\d{14}_mask_combined(\.\w+)$', mask_basename)
         if not match:
-            # Try old pattern as fallback
+            # Try pattern without timestamp
+            match = re.match(r'(.+?_t\d{5})_mask_combined(\.\w+)$', mask_basename)
+        if not match:
+            # Try old pattern without time step as fallback (older files)
             match = re.match(r'(.+?)_mask_combined(\.\w+)$', mask_basename)
         
         if match:
@@ -270,6 +277,7 @@ def create_csv_mapping(image_files, mask_files, output_path, filename="train.csv
             # Only add the pair if the corresponding image exists
             if img_key in image_basenames and img_key not in image_to_mask_dict:
                 image_to_mask_dict[img_key] = mask_basename
+                print(f"Matched: {img_key} -> {mask_basename}")  # Debug output
     
     # Convert to list of pairs for sorting
     valid_pairs = list(image_to_mask_dict.items())
@@ -388,10 +396,17 @@ def append_to_existing_csv(batch_dir, existing_csv_path):
     # Process masks
     for mask_path in masks:
         mask_basename = os.path.basename(mask_path)
-        # Updated pattern to match both old and new naming conventions (with batch ID)
-        match = re.match(r'(.+?)_\d{14}_mask_combined(\.\w+)$', mask_basename)
+        
+        # Pattern to match: {sim_name}_t{time_step}_{batch_run_id}_mask_combined.jpg
+        # Example: Intercellular_transients_0_t00000_20250413231243_mask_combined.jpg
+        
+        # Try to match the new pattern with timestamp
+        match = re.match(r'(.+?_t\d{5})_\d{14}_mask_combined(\.\w+)$', mask_basename)
         if not match:
-            # Try old pattern as fallback
+            # Try pattern without timestamp
+            match = re.match(r'(.+?_t\d{5})_mask_combined(\.\w+)$', mask_basename)
+        if not match:
+            # Try old pattern without time step as fallback (older files)
             match = re.match(r'(.+?)_mask_combined(\.\w+)$', mask_basename)
         
         if match:
