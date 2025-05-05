@@ -80,8 +80,7 @@ Where:
 ### Prerequisites
 
 - Python 3.9 or later
-- Windows 11 (recommended) or Windows 10
-- FFmpeg (for animation saving)
+- Windows 10 or later
 
 ### Setup
 
