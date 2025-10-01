@@ -378,19 +378,11 @@ class Pouch:
 
                     # Draw black border lines (only on grayscale channel)
                     cv2.polylines(img_data[:, :, 0], [points], True, 0, 1)
-            
-            # Verify the image size matches the expected output_size
-            if img_data.shape[:2] != (self.output_size[1], self.output_size[0]):
-                print(f"Warning: Generated image size {img_data.shape[:2]} doesn't match expected {(self.output_size[1], self.output_size[0])}")
-                # Resize the image to match the expected output size
-                from utils.image_processing import resize_image
-                img_data = resize_image(img_data, self.output_size)
-                
+
             # Save if output path specified
             if output_path is not None:
                 from utils.image_processing import save_image
-                # Always use self.output_size to ensure consistent dimensions
-                save_image(img_data, os.path.dirname(output_path), os.path.basename(output_path), format='png', bit_depth=10, target_size=self.output_size)
+                save_image(img_data, os.path.dirname(output_path), os.path.basename(output_path), format='png', bit_depth=10)
             
             return img_data
             

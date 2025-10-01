@@ -407,21 +407,6 @@ def generate_simulation_batch(num_simulations, output_dir, pouch_sizes=None,
         if csv_path:
             print(f"Created CSV mapping: {csv_path}")
             results['image_mask_csv'] = csv_path
-            
-            # Rename to train.csv if it's a different name
-            if os.path.basename(csv_path) != "train.csv":
-                try:
-                    standard_csv_path = os.path.join(batch_dir, "train.csv")
-                    # Try to ensure we can overwrite
-                    if os.path.exists(standard_csv_path):
-                        os.chmod(standard_csv_path, 0o666)
-                    # Copy instead of move to avoid permission issues
-                    import shutil
-                    shutil.copy2(csv_path, standard_csv_path)
-                    print(f"Copied to standard name: {standard_csv_path}")
-                    results['image_mask_csv'] = standard_csv_path
-                except Exception as rename_error:
-                    print(f"Warning: Could not rename CSV file: {rename_error}")
         else:
             print("Failed to create CSV mapping")
             results['csv_error'] = "Failed to create CSV mapping"
