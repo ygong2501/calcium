@@ -232,29 +232,23 @@ class Pouch:
             np.random.seed(self.sim_number)
 
             # Initialize state variables at t=0
-            # All cells start at resting state
-            ca_init = 0.1  # Resting cytosolic Ca²⁺ (µM)
-            ipt_init = 0.1  # Resting IP₃ (µM)
-            r_init = 1.0   # IP₃R fully available
+            # Ca and IP3 default to 0.0 (disc_dynamics already initialized to zeros)
+            # ER calcium calculated from conservation
+            self.disc_dynamics[:, 2, 0] = (self.c_tot - self.disc_dynamics[:, 0, 0]) / self.beta
 
-            self.disc_dynamics[:, 0, 0] = ca_init
-            self.disc_dynamics[:, 1, 0] = ipt_init
-            self.disc_dynamics[:, 2, 0] = (self.c_tot - ca_init) / self.beta
-            self.disc_dynamics[:, 3, 0] = r_init
+            # IP3R inactivation starts with random distribution
+            self.disc_dynamics[:, 3, 0] = np.random.uniform(0.5, 0.7, size=(self.n_cells, 1)).T
 
-            # Determine which cells initiate spontaneously
+            # Set V_PLC for standby cells (already initialized in __init__)
+            # Now override V_PLC for initiator cells
             n_initiators = max(1, int(self.frac * self.n_cells))
             initiator_cells = np.random.choice(self.n_cells, n_initiators, replace=False)
+            self.V_PLC[initiator_cells, 0] = np.random.uniform(1.3, 1.5, len(initiator_cells))
 
-            # Give initiator cells elevated IP₃ to start waves
-            self.disc_dynamics[initiator_cells, 1, 0] = 0.5
-
-            # V_PLC array for all cells (used in PLC activation)
+            # Flatten V_PLC for use in ODE loop
             V_PLC = self.V_PLC.flatten()
 
-            # Time integration loop
-            epsilon = 1e-10  # Prevent division by zero
-
+            # Time integration loop (Explicit Euler method)
             for step in range(1, self.T):
                 # Extract current state
                 ca = self.disc_dynamics[:, 0, step-1].reshape(-1, 1)
@@ -266,40 +260,35 @@ class Pouch:
                 ca_laplacian = self.D_c * np.dot(self.laplacian_matrix, ca)
                 ipt_laplacian = self.D_p * np.dot(self.laplacian_matrix, ipt)
 
-                # ODE right-hand sides
+                # ODE right-hand sides (following original implementation exactly)
 
                 # Calcium dynamics
-                # J_channel: IP₃R-mediated release from ER
-                ip3r_term = (r * ca * ipt) / ((self.k_a + ca + epsilon) * (self.k_p + ipt + epsilon))
+                # J_channel: IP₃R-mediated Ca²⁺ release from ER
+                ip3r_term = np.divide(np.divide(r * ca * ipt, (self.k_a + ca)), (self.k_p + ipt))
                 J_channel = (self.k_1 * ip3r_term**3 + self.k_2) * (s - ca)
                 # J_SERCA: SERCA pump reuptake
-                J_SERCA = self.V_SERCA * ca**2 / (ca**2 + self.K_SERCA**2 + epsilon)
+                J_SERCA = self.V_SERCA * (ca**2) / (ca**2 + self.K_SERCA**2)
 
                 ca_next = ca + self.dt * (ca_laplacian + J_channel - J_SERCA)
 
                 # IP₃ dynamics
                 # J_PLC: Calcium-dependent IP₃ production
-                J_PLC = V_PLC.reshape(-1, 1) * ca**2 / (ca**2 + self.K_PLC**2 + epsilon)
+                J_PLC = np.multiply(V_PLC.reshape(-1, 1), np.divide(ca**2, (ca**2 + self.K_PLC**2)))
                 ipt_next = ipt + self.dt * (ipt_laplacian + J_PLC - self.K_5 * ipt)
 
-                # ER calcium (determined by conservation)
+                # ER calcium (determined by conservation law)
                 s_next = (self.c_tot - ca_next) / self.beta
 
                 # IP₃ receptor inactivation
-                recovery_rate = (self.k_tau**4 + ca**4) / (self.tau_max * self.k_tau**4 + epsilon)
-                inactivation = r * (self.k_i + ca) / (self.k_i + epsilon)
-                r_next = r + self.dt * recovery_rate * (1 - inactivation)
+                recovery_rate = (self.k_tau**4 + ca**4) / (self.tau_max * self.k_tau**4)
+                inactivation = (1 - r * (self.k_i + ca) / self.k_i)
+                r_next = r + self.dt * recovery_rate * inactivation
 
-                # Check for numerical issues
-                if (np.isnan(ca_next).any() or np.isnan(ipt_next).any() or
-                    np.isnan(s_next).any() or np.isnan(r_next).any()):
-                    raise RuntimeError(f"Numerical instability detected at step {step}")
-
-                # Store state (ensure physical constraints)
-                self.disc_dynamics[:, 0, step] = np.clip(ca_next.flatten(), 0, None)
-                self.disc_dynamics[:, 1, step] = np.clip(ipt_next.flatten(), 0, None)
-                self.disc_dynamics[:, 2, step] = np.clip(s_next.flatten(), 0, None)
-                self.disc_dynamics[:, 3, step] = np.clip(r_next.flatten(), 0, 1)
+                # Store state (transpose to match original format)
+                self.disc_dynamics[:, 0, step] = ca_next.T
+                self.disc_dynamics[:, 1, step] = ipt_next.T
+                self.disc_dynamics[:, 2, step] = s_next.T
+                self.disc_dynamics[:, 3, step] = r_next.T
 
             return True
 
