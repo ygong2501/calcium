@@ -11,8 +11,8 @@ from typing import Dict, List, Tuple
 # ============================================================================
 WINDOW_WIDTH: int = 1400
 WINDOW_HEIGHT: int = 1000
-MIN_WINDOW_WIDTH: int = 1200
-MIN_WINDOW_HEIGHT: int = 800
+WINDOW_MIN_WIDTH: int = 1200
+WINDOW_MIN_HEIGHT: int = 800
 
 # ============================================================================
 # Panel Layout
@@ -29,6 +29,7 @@ BUTTON_PADDING: int = 3
 # ============================================================================
 # GUI Update Intervals (milliseconds unless specified)
 # ============================================================================
+UPDATE_INTERVAL_MS: int = 50  # GUIUpdater batch update interval (50ms = 20 FPS)
 GUI_UPDATE_INTERVAL_MS: int = 200  # Minimum time between GUI refreshes (ms)
 GUI_UPDATE_INTERVAL_SEC: float = 0.2  # Same as above in seconds
 RESOURCE_CHECK_INTERVAL_MS: int = 3000  # System resource monitoring interval
@@ -48,6 +49,7 @@ MEMORY_THRESHOLD_RETRY: int = 75  # Retry cleanup if still above this
 # ============================================================================
 DEFAULT_JPEG_QUALITY: int = 90
 DEFAULT_IMAGE_SIZE: Tuple[int, int] = (512, 512)
+DEFAULT_OUTPUT_SIZE: Tuple[int, int] = (512, 512)  # Alias for compatibility
 DEFAULT_IMAGE_SIZE_STR: str = "512x512"
 
 # ============================================================================

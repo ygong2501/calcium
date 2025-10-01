@@ -24,12 +24,18 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.parameters import SimulationParameters
 from core.pouch import Pouch
 from utils.image_processing import apply_all_defects
+from utils.batch_controller import BatchGenerationController
 
 # Only import GUI components if tkinter is available
 if TKINTER_AVAILABLE:
     from .settings_panel import SettingsPanel
     from .preview_panel import PreviewPanel
     from .cache_cleaner import show_cache_cleaner
+    from .gui_updater import GUIUpdater
+    from .constants import (
+        WINDOW_WIDTH, WINDOW_HEIGHT, WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT,
+        DEFAULT_OUTPUT_SIZE, UPDATE_INTERVAL_MS
+    )
 
 
 class MainWindow:
@@ -45,9 +51,9 @@ class MainWindow:
         self.root = root
         self.root.title("Calcium Simulation System")
         # Set minimum window size to ensure all elements are visible
-        self.root.minsize(1200, 800)
+        self.root.minsize(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)
         # Use improved approach to set initial size with delayed application
-        self.root.geometry("1400x1000")  # Increased height to ensure all elements are visible
+        self.root.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}")
         # Force update of window geometry information
         self.root.update_idletasks()
         
@@ -61,6 +67,10 @@ class MainWindow:
         self.current_pouch = None
         self.current_image = None
         self.current_defect_config = {}
+
+        # Initialize batch controller and GUI updater
+        self.batch_controller = BatchGenerationController()
+        self.gui_updater = GUIUpdater(root, update_interval_ms=UPDATE_INTERVAL_MS)
         
         # Create main notebook for tabs
         self.notebook = ttk.Notebook(self.root)
@@ -325,485 +335,174 @@ class MainWindow:
         if self.simulation_running:
             messagebox.showwarning("Warning", "Simulation already running")
             return
-        
-        # Get batch parameters
+
+        # Get batch parameters and defect configuration
         batch_params = self.settings_panel.get_batch_parameters()
-        
+        defect_config = self.settings_panel.get_defect_configuration()
+
+        # Add defect config to batch params
+        batch_params['defect_config'] = defect_config
+
         # Ask for output directory, defaulting to 'output'
         output_dir = filedialog.askdirectory(
             title="Select Output Directory for Batch Generation",
             initialdir="output"
         )
-        
+
         if not output_dir:
             # Use default output directory if user cancels
             output_dir = "output"
             # Ensure directory exists
             os.makedirs(output_dir, exist_ok=True)
-        
+
         # Update status
         self.preview_panel.status_var.set("Starting batch generation...")
         self.simulation_running = True
-        
+
         # Disable buttons
         self.generate_btn.config(state=tk.DISABLED)
         self.batch_btn.config(state=tk.DISABLED)
-        
+
         # Start batch generation in a separate thread
-        threading.Thread(target=self._run_batch_generation, 
+        threading.Thread(target=self._run_batch_generation,
                         args=(batch_params, output_dir),
                         daemon=True).start()
     
     def _run_batch_generation(self, batch_params, output_dir):
         """
         Run batch generation in a background thread.
-        
+
         Args:
             batch_params (dict): Batch generation parameters.
             output_dir (str): Output directory.
         """
-        try:
-            from main import generate_simulation_batch, monitor_memory
-            from utils.labeling import create_csv_mapping
-            import gc
-            import time
-            import psutil
-            import threading
-            
-            # Create cancel flag
-            self.cancel_batch = False
-            
-            # Add cancel button to the interface
-            self.cancel_btn = ttk.Button(
-                self.action_bar, text="Cancel Batch", 
-                command=self._cancel_batch_generation
-            )
-            self.cancel_btn.pack(side=tk.RIGHT, padx=5, pady=5)
-            
-            # Create progress bar
-            progress_frame = ttk.Frame(self.action_bar)
-            progress_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
-            
-            self.batch_progress = ttk.Progressbar(progress_frame, orient=tk.HORIZONTAL, length=100, mode='determinate')
-            self.batch_progress.pack(fill=tk.X, expand=True)
-            
-            self.progress_label = ttk.Label(progress_frame, text="Preparing...")
-            self.progress_label.pack(pady=2)
-            
-            # Function for batch GUI updates, reducing GUI update frequency
-            self.pending_updates = []
-            self.update_lock = threading.Lock()
-            self.last_gui_update = time.time()
-            
-            def delayed_gui_update():
-                with self.update_lock:
-                    current_time = time.time()
-                    # Update GUI at most once every 0.2 seconds
-                    if current_time - self.last_gui_update < 0.2 or not self.pending_updates:
-                        return
-                    
-                    # Process all accumulated updates, but only apply the last status update
-                    status_update = None
-                    progress_update = None
-                    
-                    for update in self.pending_updates:
-                        update_type = update.get('type')
-                        if update_type == 'status':
-                            status_update = update.get('text')
-                        elif update_type == 'progress':
-                            progress_update = update
-                    
-                    # Apply status update
-                    if status_update is not None:
-                        self.preview_panel.status_var.set(status_update)
-                    
-                    # Apply progress update
-                    if progress_update is not None:
-                        current = progress_update.get('current', 0)
-                        total = progress_update.get('total', 100)
-                        percent = int(current / total * 100)
-                        self.batch_progress['value'] = percent
-                        
-                        # Update progress label
-                        batch_info = progress_update.get('batch_info', '')
-                        self.progress_label['text'] = f"{batch_info} - {current}/{total} ({percent}%)"
-                    
-                    # Clear pending updates
-                    self.pending_updates = []
-                    self.last_gui_update = current_time
-            
-            # Add update to queue
-            def queue_gui_update(update_type, **kwargs):
-                with self.update_lock:
-                    update = {'type': update_type, **kwargs}
-                    self.pending_updates.append(update)
-                    
-                    # Schedule GUI update using after method
-                    self.root.after(10, delayed_gui_update)
-            
-            # Set up periodic system resource check timer
-            def check_system_resources():
-                if self.simulation_running:
-                    memory_percent, memory_mb = monitor_memory()
-                    
-                    # If memory usage is high, trigger GC automatically
-                    if memory_percent > 85:
-                        gc.collect()
-                    
-                    # Check again in 3 seconds
-                    self.root.after(3000, check_system_resources)
-            
-            # Start system resource monitoring
-            check_system_resources()
-            
-            # Improved progress callback function
-            def progress_callback(current, total, batch_idx=None, sims_per_batch=None):
-                if self.cancel_batch:
-                    return True  # Return True to signal cancellation request
-                
-                # Build batch information text
-                batch_info = ""
-                if batch_idx is not None and sims_per_batch is not None:
-                    batch_info = f"Batch {batch_idx+1}"
-                
-                # Queue updates
-                queue_gui_update('progress', current=current, total=total, batch_info=batch_info)
-                queue_gui_update('status', text=f"Generating simulation {current}/{total}...")
-                
-                return False  # Continue processing
-            
-            # Memory cleanup function
-            def force_memory_cleanup():
-                queue_gui_update('status', text="Performing memory cleanup...")
-                gc.collect()
-                # Instead of sleep, check current memory usage to determine if another collect is needed
-                memory_percent, _ = monitor_memory()
-                if memory_percent > 75:
-                    # If memory usage is still high, collect again
-                    gc.collect()
-                
-                # Clean up unneeded modules
-                import sys
-                for name in list(sys.modules.keys()):
-                    if name.startswith('matplotlib'):
-                        if name in sys.modules:
-                            del sys.modules[name]
-            
-            # Get basic parameters
-            enable_multi_batch = batch_params.get('enable_multi_batch', False)
-            
-            if enable_multi_batch:
-                num_batches = int(batch_params.get('num_batches', 1))
-                sims_per_batch = int(batch_params.get('sims_per_batch', 10))
-                total_simulations = num_batches * sims_per_batch
-                
-                # Update initial status
-                queue_gui_update('status', text=f"Starting multi-batch generation: {num_batches} batches × {sims_per_batch} simulations = {total_simulations} total")
-                queue_gui_update('progress', current=0, total=total_simulations)
-            else:
-                # Single batch mode
-                num_simulations = int(batch_params.get('num_simulations', 5))
-                queue_gui_update('progress', current=0, total=num_simulations)
-            
-            # Get edge blur settings
-            edge_blur = batch_params.get('edge_blur', False)
-            blur_kernel_size = int(batch_params.get('blur_kernel_size', 3))
-            blur_type = batch_params.get('blur_type', 'mean')
-            
-            # Get mask options
-            generate_masks = batch_params.get('generate_masks', True)
-            create_csv = batch_params.get('create_csv', False)
-            
-            # Always create basic statistics
-            create_stats = True
-            
-            # Set up defect configs
-            defect_config = self.settings_panel.get_defect_configuration()
-            
-            if enable_multi_batch:
-                num_batches = int(batch_params.get('num_batches', 1))
-                sims_per_batch = int(batch_params.get('sims_per_batch', 10))
-                defect_configs = [defect_config] * sims_per_batch if defect_config else None
-            else:
-                num_simulations = int(batch_params.get('num_simulations', 5))
-                defect_configs = [defect_config] * num_simulations if defect_config else None
-            
-            # Parse image size
-            image_size_str = batch_params.get('image_size', '512x512')
-            try:
-                width, height = map(int, image_size_str.split('x'))
-                output_size = (width, height)
-                print(f"Batch: Using custom image size: {width}x{height}")
-            except (ValueError, AttributeError):
-                # Default to 512x512 if parsing fails
-                output_size = (512, 512)
-                print(f"Batch: Failed to parse image size '{image_size_str}', using default 512x512")
-                
-            # Get JPEG quality setting
-            jpeg_quality = batch_params.get('jpeg_quality', 90)
-            
-            # Set pouch size-specific memory threshold - use lower threshold for large mode
-            pouch_sizes = batch_params.get('pouch_sizes', [])
-            memory_threshold = 70  # Default value
-            
-            # Adjust memory threshold based on pouch size
-            if 'large' in pouch_sizes:
-                memory_threshold = 60  # Use more conservative threshold in large mode
-            
-            # Multi-batch or single batch generation
-            if enable_multi_batch:
-                # Initialize combined results storage
-                all_results = {'simulations': [], 'output_dir': output_dir}
-                total_simulations = num_batches * sims_per_batch
-                
-                # Process each batch
-                for batch_idx in range(num_batches):
-                    # Check cancel flag
-                    if self.cancel_batch:
-                        queue_gui_update('status', text="Batch generation cancelled")
-                        break
-                    
-                    # Update current batch status
-                    queue_gui_update('status', text=f"Starting batch {batch_idx+1}/{num_batches} with {sims_per_batch} simulations...")
-                    
-                    # Force memory cleanup between batches (not before the first batch)
-                    if batch_idx > 0:
-                        force_memory_cleanup()
-                    
-                    # Run current batch with batch index information
-                    def batch_progress_callback(current, total):
-                        return progress_callback(
-                            current + batch_idx * sims_per_batch, 
-                            total_simulations,
-                            batch_idx,
-                            sims_per_batch
-                        )
-                    
-                    # For large mode, use lower thread priority to avoid UI freezing
-                    if 'large' in pouch_sizes:
-                        # Set lower thread priority on Windows
-                        try:
-                            import win32api
-                            import win32process
-                            import win32con
-                            # Get current thread handle
-                            current_thread = win32api.GetCurrentThread()
-                            # Set below normal priority
-                            win32process.SetThreadPriority(current_thread, win32con.THREAD_PRIORITY_BELOW_NORMAL)
-                        except ImportError:
-                            pass  # Not on Windows or missing pywin32
-                    
-                    # Run current batch
-                    batch_results = generate_simulation_batch(
-                        num_simulations=sims_per_batch,
-                        output_dir=output_dir,
-                        pouch_sizes=batch_params.get('pouch_sizes', None),
-                        sim_types=batch_params.get('sim_types', None),
-                        time_steps=batch_params.get('time_steps', None),
-                        defect_configs=defect_configs,
-                        progress_callback=batch_progress_callback,
-                        create_stats=create_stats,
-                        edge_blur=edge_blur,
-                        blur_kernel_size=blur_kernel_size,
-                        blur_type=blur_type,
-                        generate_masks=generate_masks,
-                        image_size=output_size,
-                        jpeg_quality=jpeg_quality,
-                        memory_threshold=memory_threshold,
-                        save_pouch=False  # Don't save pouch object in multi-batch mode to save memory
-                    )
-                    
-                    # Combine results
-                    if 'simulations' in batch_results and not self.cancel_batch:
-                        all_results['simulations'].extend(batch_results['simulations'])
-                        
-                        # Complete cleanup between batches, force memory release
-                        # Especially important for large mode
-                        if 'large' in pouch_sizes:
-                            force_memory_cleanup()
-                            time.sleep(0.5)  # Give system some time to release resources
-                            force_memory_cleanup()  # Try to clean up again
-                
-                # Use combined results for subsequent processing
-                results = all_results
-                
-            else:
-                # Regular single batch processing
-                queue_gui_update('status', text=f"Starting batch generation of {num_simulations} simulations...")
-                
-                # Run batch generation
-                results = generate_simulation_batch(
-                    num_simulations=num_simulations,
-                    output_dir=output_dir,
-                    pouch_sizes=batch_params.get('pouch_sizes', None),
-                    sim_types=batch_params.get('sim_types', None),
-                    time_steps=batch_params.get('time_steps', None),
-                    defect_configs=defect_configs,
-                    progress_callback=progress_callback,
-                    create_stats=create_stats,
-                    edge_blur=edge_blur,
-                    blur_kernel_size=blur_kernel_size,
-                    blur_type=blur_type,
-                    generate_masks=generate_masks,
-                    image_size=output_size,
-                    jpeg_quality=jpeg_quality,
-                    memory_threshold=memory_threshold,
-                    save_pouch=batch_params.get('enable_video', False)  # Only save pouch object if video generation is enabled
-                )
-            
-            # If cancelled, abort post-processing
+        # Create cancel flag
+        self.cancel_batch = False
+
+        # Add cancel button to the interface
+        self.cancel_btn = ttk.Button(
+            self.action_bar, text="Cancel Batch",
+            command=self._cancel_batch_generation
+        )
+        self.root.after(0, lambda: self.cancel_btn.pack(side=tk.RIGHT, padx=5, pady=5))
+
+        # Create progress bar
+        progress_frame = ttk.Frame(self.action_bar)
+        self.root.after(0, lambda: progress_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5))
+
+        self.batch_progress = ttk.Progressbar(progress_frame, orient=tk.HORIZONTAL, length=100, mode='determinate')
+        self.batch_progress.pack(fill=tk.X, expand=True)
+
+        self.progress_label = ttk.Label(progress_frame, text="Preparing...")
+        self.progress_label.pack(pady=2)
+
+        # Setup GUI updater with handlers
+        handlers = {
+            'status': lambda message: self.preview_panel.status_var.set(message),
+            'progress': self._handle_progress_update,
+        }
+        self.gui_updater.start_updates(handlers)
+
+        # Define callbacks for batch controller
+        def progress_callback(current, total, details=None):
             if self.cancel_batch:
-                # Remove cancel button
-                self.cancel_btn.destroy()
-                # Remove progress bar
-                progress_frame.destroy()
-                # Re-enable buttons
-                self.generate_btn.config(state=tk.NORMAL)
-                self.batch_btn.config(state=tk.NORMAL)
-                # Update status
-                self.preview_panel.status_var.set("Batch generation cancelled")
-                self.simulation_running = False
+                return True  # Signal cancellation
+
+            self.gui_updater.queue_progress(current, total, details)
+            self.gui_updater.queue_status(f"Generating simulation {current}/{total}...")
+            return False
+
+        def status_callback(message):
+            self.gui_updater.queue_status(message)
+
+        try:
+            # Run batch generation using controller
+            results = self.batch_controller.run_batch_generation(
+                batch_params=batch_params,
+                output_dir=output_dir,
+                progress_callback=progress_callback,
+                status_callback=status_callback
+            )
+
+            # Check if cancelled
+            if self.cancel_batch or results.get('cancelled', False):
+                self.gui_updater.queue_status("Batch generation cancelled")
                 return
-            
-            # Create CSV mapping if requested
-            csv_path = None
-            if create_csv and not self.cancel_batch:
-                queue_gui_update('status', text="Creating CSV file for image-mask mapping...")
-                
-                # Collect all image and mask files
-                all_images = []
-                all_masks = []
-                for sim_info in results.get('simulations', []):
-                    # Add image files
-                    img_dir = sim_info.get('image_dir', '')
-                    if os.path.exists(img_dir):
-                        img_files = [os.path.join(img_dir, f) for f in os.listdir(img_dir) if f.endswith('.jpg') or f.endswith('.png')]
-                        all_images.extend(img_files)
-                    
-                    # Add mask files if mask generation was enabled
-                    if generate_masks:
-                        mask_dir = sim_info.get('mask_dir', '')
-                        if os.path.exists(mask_dir):
-                            mask_files = [os.path.join(mask_dir, f) for f in os.listdir(mask_dir) if (f.endswith('.jpg') or f.endswith('.png')) and '_mask_' in f]
-                            all_masks.extend(mask_files)
-                
-                # Create CSV mapping file in the batch directory
-                if all_images and all_masks:
-                    batch_dir = results.get('output_dir', output_dir)
-                    csv_path = create_csv_mapping(all_images, all_masks, batch_dir)
-                    queue_gui_update('status', text=f"CSV mapping created: {os.path.basename(csv_path)}")
-            
-            # Process video generation if enabled
-            if batch_params.get('enable_video', False) and results.get('simulations') and not self.cancel_batch:
-                # Check memory usage
-                memory_percent, memory_mb = monitor_memory()
-                if memory_percent > 80:  # Warn user if memory usage is above 80%
-                    self.root.after(0, lambda: messagebox.showwarning(
-                        "Memory Warning", 
-                        f"Memory usage is high ({memory_percent:.1f}%). Video generation may be slow or fail."
-                    ))
-                    
-                # Get the last simulation info
-                last_sim = results.get('simulations', [])[-1]
-                last_pouch = last_sim.get('pouch')
-                
-                if last_pouch:
-                    queue_gui_update('status', text="Generating video from last simulation...")
-                    
-                    # Configure video options
-                    video_options = {
-                        'format': batch_params.get('video_format', 'mp4'),
-                        'fps': batch_params.get('video_fps', 10),
-                        'skip_frames': batch_params.get('video_skip_frames', 0),
-                        'quality': batch_params.get('video_quality', 23)
-                    }
-                    
-                    # Generate video filename
-                    video_filename = f"simulation_video.{video_options['format']}"
-                    video_path = os.path.join(output_dir, video_filename)
-                    
-                    try:
-                        # Generate video using the last simulation's pouch
-                        extra_args = ['-codec:v', 'h264', '-crf', str(video_options['quality']), '-pix_fmt', 'yuv420p']
-                        last_pouch.make_animation(
-                            path=output_dir,
-                            fps=video_options['fps'],
-                            skip_frames=video_options['skip_frames'],
-                            filename=video_filename,
-                            extra_args=extra_args
-                        )
-                        queue_gui_update('status', text="Video generation complete")
-                    except Exception as e:
-                        error_msg = f"Error generating video: {str(e)}"
-                        queue_gui_update('status', text=error_msg)
-                        self.root.after(0, lambda: messagebox.showerror("Video Error", error_msg))
-            
+
             # Build success message
             batch_dir = results.get('output_dir', output_dir)
             total_simulations = len(results.get('simulations', []))
-            
-            # Count actual images
-            total_images = 0
-            for sim_info in results.get('simulations', []):
-                total_images += sim_info.get('image_count', 0)
-            
+            total_images = sum(sim.get('image_count', 0) for sim in results.get('simulations', []))
+
             success_msg = (
                 f"Batch generation complete.\n"
                 f"Generated {total_simulations} simulations with {total_images} total images.\n"
             )
-            
-            if generate_masks:
-                mask_count = sum(len([f for f in os.listdir(sim_info.get('mask_dir', '')) 
-                               if os.path.isfile(os.path.join(sim_info.get('mask_dir', ''), f)) and '_mask_' in f])
-                           for sim_info in results.get('simulations', []))
-                success_msg += f"Generated {mask_count} mask files.\n"
-            
-            if csv_path:
-                success_msg += f"CSV mapping file created at: {os.path.basename(csv_path)}\n"
-                
-            if batch_params.get('enable_video', False):
-                video_filename = f"simulation_video.{batch_params.get('video_format', 'mp4')}"
-                success_msg += f"Generated video: {video_filename}\n"
-            
+
+            if results.get('csv_path'):
+                success_msg += f"CSV mapping file created at: {os.path.basename(results['csv_path'])}\n"
+
+            if results.get('video_path'):
+                success_msg += f"Generated video: {os.path.basename(results['video_path'])}\n"
+
             success_msg += f"Output directory: {batch_dir}"
-            
-            # Show success message with a single call
+
+            # Show success message
             self.root.after(0, lambda: messagebox.showinfo("Batch Complete", success_msg))
-            
+
         except Exception as e:
             # Handle errors
             error_msg = f"Error in batch generation: {str(e)}"
             self.root.after(0, lambda: self.preview_panel.status_var.set(error_msg))
             self.root.after(0, lambda: messagebox.showerror("Batch Error", error_msg))
-            
-            # Log more detailed error information
+
+            # Log detailed error
             import traceback
-            print(f"Detailed error information:")
             traceback.print_exc()
-        
+
         finally:
-            # Ensure UI elements are cleaned up
+            # Stop GUI updater
+            self.gui_updater.stop_updates()
+
+            # Clean up UI elements
             try:
                 if hasattr(self, 'cancel_btn'):
-                    self.cancel_btn.destroy()
-                
-                progress_frame = self.action_bar.winfo_children()[0]
-                if isinstance(progress_frame, ttk.Frame):
-                    progress_frame.destroy()
+                    self.root.after(0, lambda: self.cancel_btn.destroy())
+                self.root.after(0, lambda: progress_frame.destroy())
             except:
                 pass
-            
+
             # Re-enable buttons
             self.root.after(0, lambda: self.generate_btn.config(state=tk.NORMAL))
             self.root.after(0, lambda: self.batch_btn.config(state=tk.NORMAL))
-            
+
             # Update status
             self.root.after(0, lambda: self.preview_panel.status_var.set("Batch generation complete"))
             self.simulation_running = False
-            
-            # Final cleanup
-            gc.collect()
     
+    def _handle_progress_update(self, current, total, details=None):
+        """
+        Handle progress bar updates.
+
+        Args:
+            current (int): Current progress value.
+            total (int): Total progress value.
+            details (dict, optional): Additional progress details.
+        """
+        if total == 0:
+            percent = 0
+        else:
+            percent = int((current / total) * 100)
+
+        self.batch_progress['value'] = percent
+
+        # Update progress label
+        batch_info = ""
+        if details and 'batch_idx' in details:
+            batch_info = f"Batch {details['batch_idx'] + 1} - "
+
+        self.progress_label['text'] = f"{batch_info}{current}/{total} ({percent}%)"
+
     def _cancel_batch_generation(self):
         """Cancel an ongoing batch generation process"""
         if self.simulation_running:

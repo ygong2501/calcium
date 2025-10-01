@@ -192,6 +192,7 @@ class BatchGenerationController:
         config['generate_masks'] = batch_params.get('generate_masks', True)
         config['create_csv'] = batch_params.get('create_csv', False)
         config['enable_video'] = batch_params.get('enable_video', False)
+        config['defect_config'] = batch_params.get('defect_config', None)
 
         # Determine memory threshold based on pouch size
         if 'large' in config['pouch_sizes'] or 'xlarge' in config['pouch_sizes']:
@@ -212,8 +213,9 @@ class BatchGenerationController:
         if status_callback:
             status_callback(f"Generating {config['num_simulations']} simulations...")
 
-        # Prepare defect configs (placeholder - should be passed in batch_params)
-        defect_configs = None  # TODO: Extract from batch_params if needed
+        # Prepare defect configs
+        defect_config = config.get('defect_config')
+        defect_configs = [defect_config] * config['num_simulations'] if defect_config else None
 
         # Run batch generation
         results = generate_simulation_batch(
@@ -271,6 +273,10 @@ class BatchGenerationController:
                     return progress_callback(global_current, global_total, info)
                 return False
 
+            # Prepare defect configs for this batch
+            defect_config = config.get('defect_config')
+            defect_configs = [defect_config] * config['sims_per_batch'] if defect_config else None
+
             # Run this batch
             batch_results = generate_simulation_batch(
                 num_simulations=config['sims_per_batch'],
@@ -278,7 +284,7 @@ class BatchGenerationController:
                 pouch_sizes=config['pouch_sizes'],
                 sim_types=config['sim_types'],
                 time_steps=config['time_steps'],
-                defect_configs=None,
+                defect_configs=defect_configs,
                 progress_callback=batch_progress_callback,
                 create_stats=True,
                 edge_blur=config['edge_blur'],
