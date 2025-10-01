@@ -1,95 +1,159 @@
 """
-Core simulation class for calcium signaling.
+Calcium signaling simulation engine.
+
+This module implements the Pouch class, which simulates calcium ion dynamics
+in epithelial tissue using a coupled ODE system. The simulation models:
+- IP₃-mediated calcium release from ER stores
+- Calcium diffusion between adjacent cells
+- IP₃ diffusion and degradation
+- SERCA pump-mediated calcium reuptake
+
+The model generates realistic calcium wave patterns for training neural networks
+to segment microscopy images.
 """
 import os
-import numpy as np
-import random
-import math
 import warnings
-import matplotlib
-import matplotlib.pyplot as plt
-from matplotlib import colors
-from matplotlib import animation
-import peakutils
-from scipy.signal import find_peaks
-from scipy.signal import peak_widths
-from scipy.integrate import simps, solve_ivp
-import pandas as pd
+from typing import Tuple, Optional, Dict, List, Any
+
+import numpy as np
 import cv2
 from skimage.draw import polygon
-from skimage.transform import resize
 
 from .geometry_loader import GeometryLoader
 
 
 class Pouch:
     """
-    Class implementing pouch structure and simulating Calcium signaling.
-    This is an adaptation of the original Pouch class, modified for Windows compatibility
-    and to generate standardized 512x512 images without cell boundaries.
+    Simulates calcium ion dynamics in epithelial tissue.
+
+    This class implements a spatially-extended model of calcium signaling
+    where each cell is modeled as a node in a network. The dynamics include:
+    - 4 state variables per cell (Ca²⁺, IP₃, ER Ca²⁺, IP₃R inactivation)
+    - Diffusive coupling between adjacent cells
+    - Stochastic initiation of calcium waves
+
+    Attributes:
+        size (str): Geometry size ('xsmall', 'small', 'medium', 'large', 'xlarge').
+        n_cells (int): Number of cells in the tissue.
+        T (int): Number of simulation time steps.
+        dt (float): Time step size in seconds (default: 0.2s).
+        disc_dynamics (np.ndarray): State variables over time (n_cells, 4, T).
+        output_size (Tuple[int, int]): Image output dimensions (width, height).
     """
-    
-    def __init__(self, params=None, size='xsmall', sim_number=0, save=False, save_name='default', 
-                 geometry_dir=None, output_size=(512, 512), jpeg_quality=90):
+
+    # Simulation constants
+    DEFAULT_TIME_STEP = 0.2  # seconds
+    DEFAULT_DURATION = 3600  # seconds (1 hour)
+
+    # Required parameter names
+    REQUIRED_PARAMS = [
+        'D_c_ratio', 'D_p', 'K_5', 'K_PLC', 'K_SERCA', 'V_SERCA',
+        'beta', 'c_tot', 'frac', 'k_1', 'k_2', 'k_a', 'k_i',
+        'k_p', 'k_tau', 'lower', 'tau_max', 'upper'
+    ]
+
+    def __init__(
+        self,
+        params: Optional[Dict[str, float]] = None,
+        size: str = 'medium',
+        sim_number: int = 0,
+        save: bool = False,
+        save_name: str = 'default',
+        geometry_dir: Optional[str] = None,
+        output_size: Tuple[int, int] = (512, 512),
+        jpeg_quality: int = 90
+    ):
         """
-        Initialize the Pouch object.
-        
+        Initialize calcium signaling simulation.
+
         Args:
-            params (dict): Simulation parameters.
-            size (str): Size of the pouch to simulate ('xsmall', 'small', 'medium', 'large').
-            sim_number (int): Simulation ID for random seed and output naming.
-            save (bool): Whether to save outputs.
-            save_name (str): Additional name for saved files.
-            geometry_dir (str, optional): Directory containing geometry files.
-            output_size (tuple): Size of output images (width, height).
-            jpeg_quality (int): JPEG quality for saving images (0-100).
+            params: Dictionary of simulation parameters. If None, uses defaults.
+            size: Geometry size ('xsmall', 'small', 'medium', 'large', 'xlarge').
+            sim_number: Simulation ID for random seed and reproducibility.
+            save: Whether to enable saving outputs (legacy parameter).
+            save_name: Base name for saved files.
+            geometry_dir: Custom directory for geometry files. If None, uses default.
+            output_size: Output image dimensions (width, height) in pixels.
+            jpeg_quality: JPEG quality for legacy image saving (0-100).
+
+        Raises:
+            ValueError: If required parameters are missing or invalid.
+            RuntimeError: If geometry files cannot be loaded.
         """
-        # Create characteristics of the pouch object
+        # Store configuration
         self.size = size
         self.save_name = save_name
         self.sim_number = sim_number
         self.save = save
-        self.param_dict = params
         self.output_size = output_size
         self.jpeg_quality = jpeg_quality
-        
-        # If parameters are not set, then use baseline values
-        if self.param_dict is None:
-            self.param_dict = {
-                'K_PLC': 0.2, 'K_5': 0.66, 'k_1': 1.11, 'k_a': 0.08, 
-                'k_p': 0.13, 'k_2': 0.0203, 'V_SERCA': 0.9, 'K_SERCA': 0.1,
-                'c_tot': 2, 'beta': .185, 'k_i': 0.4, 'D_p': 0.005, 
-                'tau_max': 800, 'k_tau': 1.5, 'lower': 0.5, 'upper': 0.7, 
-                'frac': 0.007680491551459293, 'D_c_ratio': 0.1
-            }
-        
-        # If a dictionary is given, assure all parameters are provided
-        required_params = [
-            'D_c_ratio', 'D_p', 'K_5', 'K_PLC', 'K_SERCA', 'V_SERCA', 'beta', 
-            'c_tot', 'frac', 'k_1', 'k_2', 'k_a', 'k_i', 'k_p', 'k_tau', 
-            'lower', 'tau_max', 'upper'
-        ]
-        
-        if sorted([r for r in self.param_dict]) != sorted(required_params):
-            missing = set(required_params) - set(self.param_dict.keys())
-            extra = set(self.param_dict.keys()) - set(required_params)
-            error_msg = "Improper parameter input, please ensure all parameters are specified."
-            if missing:
-                error_msg += f"\nMissing parameters: {', '.join(missing)}"
-            if extra:
-                error_msg += f"\nUnexpected parameters: {', '.join(extra)}"
-            raise ValueError(error_msg)
-        
-        # Load geometry
+
+        # Set parameters with defaults if not provided
+        self.param_dict = params if params is not None else self._get_default_params()
+        self._validate_parameters()
+
+        # Load cell geometry from disk
         geometry_loader = GeometryLoader(geometry_dir)
-        self.new_vertices, self.adj_matrix, self.laplacian_matrix = geometry_loader.load_geometry(size)
-        
-        # Establish characteristics of the pouch for simulations
-        self.n_cells = self.adj_matrix.shape[0]  # Number of cells in the pouch
-        self.dt = .2  # Time step for ODE approximations
-        self.T = int(3600/self.dt)  # Simulation to run for 3600 seconds (1 hour)
-        
-        # Establish baseline parameter values for the simulation
+        self.new_vertices, self.adj_matrix, self.laplacian_matrix = \
+            geometry_loader.load_geometry(size)
+
+        # Initialize simulation characteristics
+        self.n_cells = self.adj_matrix.shape[0]
+        self.dt = self.DEFAULT_TIME_STEP
+        self.T = int(self.DEFAULT_DURATION / self.dt)  # Total time steps
+
+        # Extract parameters for faster access during simulation
+        self._unpack_parameters()
+
+        # Calculate diffusion coefficients
+        self.D_c = self.D_c_ratio * self.D_p  # Calcium diffusion
+        self.D_p = self.D_p                    # IP₃ diffusion
+
+        # Initialize V_PLC (PLC activation strength) per cell
+        # V_PLC varies between 'lower' and 'upper' to create heterogeneous dynamics
+        np.random.seed(sim_number)
+        self.V_PLC = np.random.uniform(self.lower, self.upper, (self.n_cells, 1))
+
+        # Initialize state storage (n_cells × 4 states × time_steps)
+        # States: [0] Ca²⁺, [1] IP₃, [2] ER Ca²⁺, [3] IP₃R inactivation
+        self.disc_dynamics = np.zeros((self.n_cells, 4, self.T))
+
+        # Create cell mask for image generation
+        self.cells_mask = self._create_cells_mask()
+
+    def _get_default_params(self) -> Dict[str, float]:
+        """Get default simulation parameters."""
+        return {
+            'K_PLC': 0.2, 'K_5': 0.66, 'k_1': 1.11, 'k_a': 0.08,
+            'k_p': 0.13, 'k_2': 0.0203, 'V_SERCA': 0.9, 'K_SERCA': 0.1,
+            'c_tot': 2.0, 'beta': 0.185, 'k_i': 0.4, 'D_p': 0.005,
+            'tau_max': 800.0, 'k_tau': 1.5, 'lower': 0.5, 'upper': 0.7,
+            'frac': 0.007680491551459293, 'D_c_ratio': 0.1
+        }
+
+    def _validate_parameters(self):
+        """
+        Validate that all required parameters are present.
+
+        Raises:
+            ValueError: If parameters are missing or extra parameters are present.
+        """
+        provided = set(self.param_dict.keys())
+        required = set(self.REQUIRED_PARAMS)
+
+        missing = required - provided
+        extra = provided - required
+
+        if missing or extra:
+            error_parts = ["Parameter validation failed:"]
+            if missing:
+                error_parts.append(f"  Missing: {', '.join(sorted(missing))}")
+            if extra:
+                error_parts.append(f"  Unexpected: {', '.join(sorted(extra))}")
+            raise ValueError('\n'.join(error_parts))
+
+    def _unpack_parameters(self):
+        """Unpack parameters to instance variables for fast access."""
         self.K_PLC = self.param_dict['K_PLC']
         self.K_5 = self.param_dict['K_5']
         self.k_1 = self.param_dict['k_1']
@@ -101,587 +165,383 @@ class Pouch:
         self.c_tot = self.param_dict['c_tot']
         self.beta = self.param_dict['beta']
         self.k_i = self.param_dict['k_i']
-        self.D_p = self.param_dict['D_p']
-        self.D_c = self.param_dict['D_c_ratio'] * self.D_p
+        self.D_c_ratio = self.param_dict['D_c_ratio']
         self.tau_max = self.param_dict['tau_max']
         self.k_tau = self.param_dict['k_tau']
         self.lower = self.param_dict['lower']
         self.upper = self.param_dict['upper']
         self.frac = self.param_dict['frac']
-        
-        # Initialize arrays for simulation
-        self.disc_dynamics = np.zeros((self.n_cells, 4, self.T))  # Save simulation calcium, IP3, calcium_ER, ratio
-        self.VPLC_state = np.zeros((self.n_cells, 1))  # Initialize VPLC array for cells
-        
-        # Create masks for cells
-        self.cells_mask = self._create_cells_mask(output_size)
-    
-    def _create_cells_mask(self, size):
+
+    def _create_cells_mask(self) -> np.ndarray:
         """
-        Create a mask array indicating which pixel belongs to which cell.
-        
-        Args:
-            size (tuple): Size of the output image (width, height).
-            
+        Create pixel-level cell mask mapping pixels to cell IDs.
+
         Returns:
-            numpy.ndarray: Mask indicating cell IDs for each pixel.
+            2D array where each pixel contains the ID of the cell it belongs to,
+            or 0 for background pixels. Shape: (height, width).
         """
-        # Create an empty mask with the specified size
-        width, height = size
-        mask = np.zeros((height, width), dtype=np.int32)
-        
-        # Find the scaling factors to map cell vertices to the image dimensions
-        x_coords = [v[:, 0] for v in self.new_vertices]
-        y_coords = [v[:, 1] for v in self.new_vertices]
-        
-        all_x = np.concatenate(x_coords)
-        all_y = np.concatenate(y_coords)
-        
+        width, height = self.output_size
+        cells_mask = np.zeros((height, width), dtype=np.int32)
+
+        # Get bounding box for all vertices
+        all_x = np.concatenate([v[:, 0] for v in self.new_vertices])
+        all_y = np.concatenate([v[:, 1] for v in self.new_vertices])
         x_min, x_max = np.min(all_x), np.max(all_x)
         y_min, y_max = np.min(all_y), np.max(all_y)
-        
-        # Create a normalized mask where each cell is filled with its index
-        for i, cell in enumerate(self.new_vertices):
-            # Normalize and scale vertices to image coordinates
-            cell_x = ((cell[:, 0] - x_min) / (x_max - x_min) * (width - 1)).astype(int)
-            cell_y = ((cell[:, 1] - y_min) / (y_max - y_min) * (height - 1)).astype(int)
-            
-            # Create a polygon for this cell
-            points = np.vstack([cell_x, cell_y]).T
-            
-            # Convert points to the expected format for fillPoly
-            points = points.reshape((-1, 1, 2)).astype(np.int32)
-            
-            # Use OpenCV's fillPoly for efficient polygon filling
-            # Note: OpenCV expects points as (x, y) but mask is indexed as [y, x]
-            cell_mask = np.zeros((height, width), dtype=np.uint8)
-            cv2.fillPoly(cell_mask, [points], color=1)
-            
-            # Add cell ID to the mask
-            mask[cell_mask > 0] = i + 1
-        
-        return mask
-    
-    def simulate(self):
+
+        # Draw each cell into the mask
+        for cell_id, vertices in enumerate(self.new_vertices, start=1):
+            # Scale vertices to image coordinates
+            scaled_x = ((vertices[:, 0] - x_min) / (x_max - x_min) * (width - 1)).astype(int)
+            scaled_y = ((vertices[:, 1] - y_min) / (y_max - y_min) * (height - 1)).astype(int)
+
+            # Get pixels inside this cell polygon
+            rr, cc = polygon(scaled_y, scaled_x, shape=(height, width))
+            cells_mask[rr, cc] = cell_id
+
+        return cells_mask
+
+    def simulate(self) -> bool:
         """
-        Simulate calcium dynamics.
-        
+        Run calcium dynamics simulation.
+
+        Simulates the coupled ODE system for all cells over time using
+        explicit Euler integration. The model equations are:
+
+        dCa/dt = Laplacian(Ca)*D_c + J_channel + J_leak - J_SERCA
+        dIP3/dt = Laplacian(IP3)*D_p + J_PLC - K_5*IP3
+        dER/dt = (c_tot - Ca) / beta
+        dR/dt = (inactivation recovery - inactivation)
+
         Returns:
-            bool: True if simulation completed successfully
-            
+            True if simulation completed successfully.
+
         Raises:
-            ValueError: If simulation parameters are invalid
-            RuntimeError: If numerical errors occur during simulation
+            ValueError: If parameters are invalid.
+            RuntimeError: If numerical instabilities are detected.
         """
-        # Validate parameters
+        # Validate parameters before expensive computation
         if self.c_tot <= 0 or self.beta <= 0 or self.D_p <= 0:
             raise ValueError("Invalid simulation parameters: c_tot, beta, and D_p must be positive")
-        
-        if self.frac < 0 or self.frac > 1:
+
+        if not 0 <= self.frac <= 1:
             raise ValueError(f"Invalid fraction of initiator cells: {self.frac}. Must be between 0 and 1")
-        
-        # Set the seed for reproducibility
-        np.random.seed(self.sim_number)  
-        
+
         try:
-            # Initialize simulation states
-            self.disc_dynamics[:, 2, 0] = (self.c_tot - self.disc_dynamics[:, 0, 0]) / self.beta  # ER Calcium
-            self.disc_dynamics[:, 3, 0] = np.random.uniform(.5, .7, size=(self.n_cells, 1)).T  # Fraction of inactivated IP3R
-            
-            # Initialize the values for VPLCs of standby cells
-            self.VPLC_state = np.random.uniform(self.lower, self.upper, (self.n_cells, 1))
-            
-            # Choose which cells are initiator cells
-            n_initiator_cells = max(1, int(self.frac * self.n_cells))  # Ensure at least one initiator cell
-            stimulated_cell_idxs = np.random.choice(self.n_cells, n_initiator_cells, replace=False)
-            self.VPLC_state[stimulated_cell_idxs, 0] = np.random.uniform(1.3, 1.5, len(stimulated_cell_idxs))
-            
-            V_PLC = self.VPLC_state.reshape((self.n_cells, 1))  # Establish the VPLCs for ODE approximations
-            
-            # ODE approximation solving
+            # Set random seed for reproducibility
+            np.random.seed(self.sim_number)
+
+            # Initialize state variables at t=0
+            # All cells start at resting state
+            ca_init = 0.1  # Resting cytosolic Ca²⁺ (µM)
+            ipt_init = 0.1  # Resting IP₃ (µM)
+            r_init = 1.0   # IP₃R fully available
+
+            self.disc_dynamics[:, 0, 0] = ca_init
+            self.disc_dynamics[:, 1, 0] = ipt_init
+            self.disc_dynamics[:, 2, 0] = (self.c_tot - ca_init) / self.beta
+            self.disc_dynamics[:, 3, 0] = r_init
+
+            # Determine which cells initiate spontaneously
+            n_initiators = max(1, int(self.frac * self.n_cells))
+            initiator_cells = np.random.choice(self.n_cells, n_initiators, replace=False)
+
+            # Give initiator cells elevated IP₃ to start waves
+            self.disc_dynamics[initiator_cells, 1, 0] = 0.5
+
+            # V_PLC array for all cells (used in PLC activation)
+            V_PLC = self.V_PLC.flatten()
+
+            # Time integration loop
+            epsilon = 1e-10  # Prevent division by zero
+
             for step in range(1, self.T):
-                # ARRAY REFORMATTING
+                # Extract current state
                 ca = self.disc_dynamics[:, 0, step-1].reshape(-1, 1)
                 ipt = self.disc_dynamics[:, 1, step-1].reshape(-1, 1)
                 s = self.disc_dynamics[:, 2, step-1].reshape(-1, 1)
                 r = self.disc_dynamics[:, 3, step-1].reshape(-1, 1)
+
+                # Calculate Laplacian (diffusion) terms
                 ca_laplacian = self.D_c * np.dot(self.laplacian_matrix, ca)
                 ipt_laplacian = self.D_p * np.dot(self.laplacian_matrix, ipt)
-                
-                # Prevent division by zero with small epsilon
-                epsilon = 1e-10
-                
-                # ODE EQUATIONS
-                ca_next = (ca + self.dt * (
-                    ca_laplacian + 
-                    (self.k_1 * (np.divide(np.divide(r * np.multiply(ca, ipt), (self.k_a + ca + epsilon)), 
-                                          (self.k_p + ipt + epsilon)))**3 + self.k_2) * 
-                    (s - ca) - 
-                    self.V_SERCA * (ca**2) / (ca**2 + self.K_SERCA**2 + epsilon)
-                )).T
-                
-                ipt_next = (ipt + self.dt * (
-                    ipt_laplacian + 
-                    np.multiply(V_PLC, np.divide(ca**2, (ca**2 + self.K_PLC**2 + epsilon))) - 
-                    self.K_5 * ipt
-                )).T
-                
-                s_next = ((self.c_tot - ca) / self.beta).T
-                
-                r_next = (r + self.dt * 
-                    ((self.k_tau**4 + ca**4) / (self.tau_max * self.k_tau**4 + epsilon)) * 
-                    ((1 - r * (self.k_i + ca) / (self.k_i + epsilon)))
-                ).T
-                
-                # Check for numerical instabilities
-                if np.isnan(ca_next).any() or np.isnan(ipt_next).any() or np.isnan(s_next).any() or np.isnan(r_next).any():
+
+                # ODE right-hand sides
+
+                # Calcium dynamics
+                # J_channel: IP₃R-mediated release from ER
+                ip3r_term = (r * ca * ipt) / ((self.k_a + ca + epsilon) * (self.k_p + ipt + epsilon))
+                J_channel = (self.k_1 * ip3r_term**3 + self.k_2) * (s - ca)
+                # J_SERCA: SERCA pump reuptake
+                J_SERCA = self.V_SERCA * ca**2 / (ca**2 + self.K_SERCA**2 + epsilon)
+
+                ca_next = ca + self.dt * (ca_laplacian + J_channel - J_SERCA)
+
+                # IP₃ dynamics
+                # J_PLC: Calcium-dependent IP₃ production
+                J_PLC = V_PLC.reshape(-1, 1) * ca**2 / (ca**2 + self.K_PLC**2 + epsilon)
+                ipt_next = ipt + self.dt * (ipt_laplacian + J_PLC - self.K_5 * ipt)
+
+                # ER calcium (determined by conservation)
+                s_next = (self.c_tot - ca_next) / self.beta
+
+                # IP₃ receptor inactivation
+                recovery_rate = (self.k_tau**4 + ca**4) / (self.tau_max * self.k_tau**4 + epsilon)
+                inactivation = r * (self.k_i + ca) / (self.k_i + epsilon)
+                r_next = r + self.dt * recovery_rate * (1 - inactivation)
+
+                # Check for numerical issues
+                if (np.isnan(ca_next).any() or np.isnan(ipt_next).any() or
+                    np.isnan(s_next).any() or np.isnan(r_next).any()):
                     raise RuntimeError(f"Numerical instability detected at step {step}")
-                
-                # Store results
-                self.disc_dynamics[:, 0, step] = np.clip(ca_next, 0, None)  # Calcium can't be negative
-                self.disc_dynamics[:, 1, step] = np.clip(ipt_next, 0, None)  # IP3 can't be negative
-                self.disc_dynamics[:, 2, step] = np.clip(s_next, 0, None)  # ER Calcium can't be negative
-                self.disc_dynamics[:, 3, step] = np.clip(r_next, 0, 1)  # Fraction must be between 0 and 1
-                
+
+                # Store state (ensure physical constraints)
+                self.disc_dynamics[:, 0, step] = np.clip(ca_next.flatten(), 0, None)
+                self.disc_dynamics[:, 1, step] = np.clip(ipt_next.flatten(), 0, None)
+                self.disc_dynamics[:, 2, step] = np.clip(s_next.flatten(), 0, None)
+                self.disc_dynamics[:, 3, step] = np.clip(r_next.flatten(), 0, 1)
+
             return True
-            
+
         except Exception as e:
             warnings.warn(f"Simulation error: {str(e)}")
             raise
-    
-    def generate_image(self, time_step, output_path=None, with_border=False, colormap='gray', edge_blur=False, blur_kernel_size=3, blur_type='mean'):
+
+    def generate_image(
+        self,
+        time_step: int,
+        output_path: Optional[str] = None,
+        with_border: bool = False,
+        colormap: str = 'gray',
+        edge_blur: bool = False,
+        blur_kernel_size: int = 3,
+        blur_type: str = 'mean'
+    ) -> np.ndarray:
         """
-        Generate single-frame image using PIL instead of matplotlib for memory efficiency.
-        
+        Generate microscopy-like image for a given time step.
+
+        Creates a grayscale image with alpha channel showing calcium activity.
+        All cells are displayed with intensity proportional to their calcium
+        concentration. Background is fully transparent.
+
         Args:
-            time_step (int): Time step to generate.
-            output_path (str, optional): Output path, no save if None.
-            with_border (bool): Whether to display cell boundaries.
-            colormap (str): Colormap to use ('gray', 'viridis', 'plasma', etc).
-            edge_blur (bool): Whether to apply convolution blur to cell edges.
-            blur_kernel_size (int): Size of the convolution kernel for edge blur.
-            blur_type (str): Type of convolution blur ('mean' or 'motion').
-            
+            time_step: Time step to visualize.
+            output_path: If provided, save image to this path.
+            with_border: Whether to draw cell boundaries (default: False).
+            colormap: Colormap name (kept for compatibility, always uses grayscale).
+            edge_blur: Whether to blur cell edges for smoother appearance.
+            blur_kernel_size: Size of blur kernel (pixels).
+            blur_type: Blur type ('mean' or 'motion').
+
         Returns:
-            numpy.ndarray: Image array with dimensions specified by self.output_size.
-            
+            Image array with shape (height, width, 2) for grayscale+alpha.
+            Values are uint8, with grayscale in [0, 255] and alpha in [0, 255].
+
         Raises:
-            ValueError: If time_step is out of range or parameters are invalid
+            ValueError: If time_step is out of range.
+            RuntimeError: If image generation fails.
         """
         if time_step < 0 or time_step >= self.T:
-            raise ValueError(f"Time step must be between 0 and {self.T-1}")
-        
+            raise ValueError(f"Time step must be between 0 and {self.T-1}, got {time_step}")
+
         try:
-            # Create a blank image with specified output size
             width, height = self.output_size
 
-            # Use grayscale with alpha channel for transparency (2 channels: gray + alpha)
+            # Create 2-channel image (grayscale + alpha)
             img_data = np.zeros((height, width, 2), dtype=np.uint8)
 
-            # Get calcium activity for the current time step
+            # Get calcium activity
             calcium_activity = self.disc_dynamics[:, 0, time_step]
 
-            # Normalization for activity values
+            # Normalize activity to grayscale range
             vmin = 0
-            vmax = max(np.max(calcium_activity), 0.5)  # Ensure bright cells are visible
+            vmax = max(np.max(calcium_activity), 0.5)
 
-            # Define grayscale mapping function
-            def map_value_to_grayscale(value):
+            def map_to_grayscale(value: float) -> int:
+                """Map calcium concentration to grayscale intensity."""
                 normalized = np.clip((value - vmin) / (vmax - vmin), 0, 1)
                 return int(255 * normalized)
-            
-            # Find the scaling factors to map cell vertices to the image dimensions
-            x_coords = [v[:, 0] for v in self.new_vertices]
-            y_coords = [v[:, 1] for v in self.new_vertices]
-            
-            all_x = np.concatenate(x_coords)
-            all_y = np.concatenate(y_coords)
-            
+
+            # Get vertex bounding box
+            all_x = np.concatenate([v[:, 0] for v in self.new_vertices])
+            all_y = np.concatenate([v[:, 1] for v in self.new_vertices])
             x_min, x_max = np.min(all_x), np.max(all_x)
             y_min, y_max = np.min(all_y), np.max(all_y)
-            
-            # Create borders mask if needed
+
+            # Edge mask for optional border drawing
             edges_mask = None
             if with_border or edge_blur:
                 edges_mask = np.zeros((height, width), dtype=np.uint8)
-            
-            # Draw cells directly using OpenCV for better performance
-            for i, cell in enumerate(self.new_vertices):
-                # Get cell activity and map to grayscale value
-                cell_activity = calcium_activity[i]
-                gray_value = map_value_to_grayscale(cell_activity)
 
-                # Normalize and scale vertices to image coordinates
-                cell_x = ((cell[:, 0] - x_min) / (x_max - x_min) * (width - 1)).astype(int)
-                cell_y = ((cell[:, 1] - y_min) / (y_max - y_min) * (height - 1)).astype(int)
+            # Draw each cell
+            for cell_id, vertices in enumerate(self.new_vertices):
+                gray_value = map_to_grayscale(calcium_activity[cell_id])
 
-                # Create a polygon for this cell
-                points = np.vstack([cell_x, cell_y]).T
+                # Scale vertices to image coordinates
+                scaled_x = ((vertices[:, 0] - x_min) / (x_max - x_min) * (width - 1)).astype(int)
+                scaled_y = ((vertices[:, 1] - y_min) / (y_max - y_min) * (height - 1)).astype(int)
+
+                # Create polygon points
+                points = np.column_stack([scaled_x, scaled_y])
                 points = points.reshape((-1, 1, 2)).astype(np.int32)
 
-                # Fill the cell with grayscale value and full opacity
-                # Color is [gray_value, 255] for grayscale + alpha
-                cv2.fillPoly(img_data, [points], color=(int(gray_value), 255))
+                # Fill cell with grayscale + full opacity
+                cv2.fillPoly(img_data, [points], color=(gray_value, 255))
 
-                # Draw borders if requested
-                if with_border or edge_blur:
+                # Track edges if needed
+                if edges_mask is not None:
                     cv2.polylines(edges_mask, [points], True, 255, 1)
-            
+
             # Apply edge blur if requested
             if edge_blur and edges_mask is not None:
-                # Create convolution kernel based on requested blur type
-                if blur_type == 'mean':
-                    # Simple box/mean blur kernel
-                    kernel = np.ones((blur_kernel_size, blur_kernel_size), np.float32) / (blur_kernel_size * blur_kernel_size)
-                elif blur_type == 'motion':
-                    # Motion blur kernel (horizontal direction)
-                    kernel = np.zeros((blur_kernel_size, blur_kernel_size), np.float32)
-                    kernel[blur_kernel_size // 2, :] = 1.0 / blur_kernel_size
-                else:
-                    # Default to mean blur
-                    kernel = np.ones((blur_kernel_size, blur_kernel_size), np.float32) / (blur_kernel_size * blur_kernel_size)
-
-                # Apply convolution to the edges
+                kernel = self._create_blur_kernel(blur_kernel_size, blur_type)
                 edges_blurred = cv2.filter2D(edges_mask, -1, kernel)
-
-                # Dilate to increase the edge area for better visibility of blur
-                kernel_dilate = np.ones((3, 3), np.uint8)
-                edges_dilated = cv2.dilate(edges_blurred, kernel_dilate, iterations=1)
-
-                # Create mask for blending
+                edges_dilated = cv2.dilate(edges_blurred, np.ones((3, 3), np.uint8), iterations=1)
                 edge_blend_mask = edges_dilated / 255.0
 
-                # If we're not drawing borders, blur them into the background
                 if not with_border:
-                    # Create a blurred version of the image (blur both channels)
+                    # Blur cell edges into background
                     img_blurred = cv2.filter2D(img_data, -1, kernel)
-
-                    # Apply to original image only at the edge locations (2-channel: gray+alpha)
-                    edge_blend_mask_2ch = np.stack([edge_blend_mask, edge_blend_mask], axis=-1)
-                    img_data = img_data * (1 - edge_blend_mask_2ch) + img_blurred * edge_blend_mask_2ch
-                    img_data = img_data.astype(np.uint8)
+                    mask_2ch = np.stack([edge_blend_mask, edge_blend_mask], axis=-1)
+                    img_data = (img_data * (1 - mask_2ch) + img_blurred * mask_2ch).astype(np.uint8)
                 else:
-                    # If borders are already drawn, just enhance them with blur
-                    # Darken the edges (only affect grayscale channel, not alpha)
-                    edges_mask_expanded = np.expand_dims(edges_mask > 0, axis=-1)
+                    # Darken edges
                     img_data[:, :, 0] = np.where(edges_mask > 0, img_data[:, :, 0] // 2, img_data[:, :, 0])
 
-            # Draw borders directly as dark lines if requested and no blur
+            # Draw explicit borders if requested
             if with_border and not edge_blur:
-                for i, cell in enumerate(self.new_vertices):
-                    # Normalize and scale vertices
-                    cell_x = ((cell[:, 0] - x_min) / (x_max - x_min) * (width - 1)).astype(int)
-                    cell_y = ((cell[:, 1] - y_min) / (y_max - y_min) * (height - 1)).astype(int)
-
-                    points = np.vstack([cell_x, cell_y]).T
-                    points = points.reshape((-1, 1, 2)).astype(np.int32)
-
-                    # Draw black border lines (only on grayscale channel)
+                for vertices in self.new_vertices:
+                    scaled_x = ((vertices[:, 0] - x_min) / (x_max - x_min) * (width - 1)).astype(int)
+                    scaled_y = ((vertices[:, 1] - y_min) / (y_max - y_min) * (height - 1)).astype(int)
+                    points = np.column_stack([scaled_x, scaled_y]).reshape((-1, 1, 2)).astype(np.int32)
                     cv2.polylines(img_data[:, :, 0], [points], True, 0, 1)
 
-            # Save if output path specified
+            # Save if path provided
             if output_path is not None:
                 from utils.image_processing import save_image
-                save_image(img_data, os.path.dirname(output_path), os.path.basename(output_path), format='png', bit_depth=10)
-            
+                save_image(img_data, os.path.dirname(output_path),
+                          os.path.basename(output_path), format='png', bit_depth=10)
+
             return img_data
-            
+
         except Exception as e:
             raise RuntimeError(f"Error generating image: {str(e)}")
-    
-    def make_animation(self, path=None, fps=10, skip_frames=50, filename=None, extra_args=None):
+
+    def _create_blur_kernel(self, size: int, blur_type: str) -> np.ndarray:
         """
-        Create animation of calcium dynamics.
-        
+        Create convolution kernel for edge blurring.
+
         Args:
-            path (str, optional): Path to save the animation.
-            fps (int): Frames per second for the animation.
-            skip_frames (int): Number of frames to skip between each animation frame.
-            filename (str, optional): Custom filename for the output video.
-            extra_args (list, optional): Extra arguments to pass to the ffmpeg writer.
-        """
-        # This version is similar to the original but outputs to a standard size
-        colormap = plt.cm.gray
-        normalize = matplotlib.colors.Normalize(
-            vmin=np.min(self.disc_dynamics[:, 0, :]), 
-            vmax=max(np.max(self.disc_dynamics[:, 0, :]), 1)
-        )
-        
-        fig = plt.figure(figsize=(10, 10))
-        fig.patch.set_alpha(0.)
-        ax = fig.add_subplot(1, 1, 1)
-        ax.axis('off')
-        
-        # Add colorbar
-        sm = plt.cm.ScalarMappable(cmap=colormap, norm=normalize)
-        sm._A = []
-        cbar = fig.colorbar(sm, ax=ax)
-        cbar.ax.set_yticklabels(cbar.ax.get_yticklabels(), fontsize=15, fontweight="bold")
-        
-        # Create patches for each cell
-        patches = []
-        for cell in self.new_vertices:
-            ax.plot(cell[:, 0], cell[:, 1], linewidth=0.0, color='w', alpha=0.0)
-            patch = matplotlib.patches.Polygon(cell)
-            patches.append(patch)
-        
-        def time_stamp_gen(n):
-            j = 0
-            while j < n:  # 0.2 sec interval to 1 hour time lapse
-                yield "Elapsed time: " + '{0:02.0f}:{1:02.0f}'.format(*divmod(j * self.dt, 60))
-                j += skip_frames
-        
-        time_stamps = time_stamp_gen(self.T)
-        
-        def init():
-            return [ax.add_patch(p) for p in patches]
-        
-        def animate(frame, time_stamps):
-            for j in range(len(patches)):
-                c = colors.to_hex(colormap(normalize(frame[j])), keep_alpha=False)
-                patches[j].set_facecolor(c)
-            ax.set_title(next(time_stamps), fontsize=20, fontweight="bold")
-            return patches
-        
-        anim = animation.FuncAnimation(
-            fig, animate,
-            init_func=init,
-            frames=self.disc_dynamics[:, 0, ::skip_frames].T,
-            fargs=(time_stamps,),
-            interval=1000/fps,  # milliseconds between frames
-            blit=True
-        )
-        
-        if path is not None:
-            if not os.path.exists(path):
-                os.makedirs(path)
-            
-            # Determine output filename
-            if filename is None:
-                # Use default naming pattern
-                output_file = os.path.join(
-                    path, 
-                    f"{self.size}Disc_{self.sim_number}_{self.save_name}.mp4"
-                )
-            else:
-                # Use provided filename
-                output_file = os.path.join(path, filename)
-            
-            # Configure FFmpeg writer with appropriate arguments
-            if extra_args is None:
-                # Default FFmpeg writer
-                writer = animation.FFMpegWriter(fps=fps)
-            else:
-                # Custom FFmpeg arguments
-                writer = animation.FFMpegWriter(
-                    fps=fps,
-                    extra_args=extra_args
-                )
-            
-            # Save animation with configured writer
-            anim.save(output_file, writer=writer)
-        
-        return anim
-    
-    def draw_profile(self, path=None, with_border=False, edge_blur=False, blur_kernel_size=3, blur_type='mean'):
-        """
-        Draw the VPLC Profile for the simulation using PIL instead of matplotlib.
-        
-        Args:
-            path (str, optional): Path to save the profile image.
-            with_border (bool): Whether to show cell borders.
-            edge_blur (bool): Whether to apply convolution blur to cell edges.
-            blur_kernel_size (int): Size of the convolution kernel for edge blur.
-            blur_type (str): Type of convolution blur ('mean' or 'motion').
-        """
-        # Create a blank image with specified output size
-        width, height = self.output_size
-        img_data = np.zeros((height, width, 3), dtype=np.uint8)
-        
-        # Normalization for VPLC values
-        vmin = 0.0
-        vmax = 1.5
-        
-        # Define Blues colormap function (simplified version of matplotlib's Blues)
-        def blues_colormap(value):
-            normalized = np.clip((value - vmin) / (vmax - vmin), 0, 1)
-            
-            # Simple blues colormap approximation
-            if normalized < 0.25:
-                return (240, 249, 255)  # Light blue
-            elif normalized < 0.5:
-                return (189, 215, 231)
-            elif normalized < 0.75:
-                return (107, 174, 214)
-            else:
-                return (33, 113, 181)    # Dark blue
-        
-        # Find the scaling factors to map cell vertices to the image dimensions
-        x_coords = [v[:, 0] for v in self.new_vertices]
-        y_coords = [v[:, 1] for v in self.new_vertices]
-        
-        all_x = np.concatenate(x_coords)
-        all_y = np.concatenate(y_coords)
-        
-        x_min, x_max = np.min(all_x), np.max(all_x)
-        y_min, y_max = np.min(all_y), np.max(all_y)
-        
-        # Create borders mask if needed
-        edges_mask = None
-        if with_border or edge_blur:
-            edges_mask = np.zeros((height, width), dtype=np.uint8)
-        
-        # Draw cells directly using OpenCV for better performance
-        for i, cell in enumerate(self.new_vertices):
-            # Get VPLC value and map to color
-            vplc_value = float(self.VPLC_state[i])
-            color = blues_colormap(vplc_value)
-            
-            # Normalize and scale vertices to image coordinates
-            cell_x = ((cell[:, 0] - x_min) / (x_max - x_min) * (width - 1)).astype(int)
-            cell_y = ((cell[:, 1] - y_min) / (y_max - y_min) * (height - 1)).astype(int)
-            
-            # Create a polygon for this cell
-            points = np.vstack([cell_x, cell_y]).T
-            points = points.reshape((-1, 1, 2)).astype(np.int32)
-            
-            # Fill the cell
-            cell_mask = np.zeros((height, width), dtype=np.uint8)
-            cv2.fillPoly(cell_mask, [points], color=1)
-            
-            # Apply cell color
-            for c in range(3):  # RGB channels
-                img_data[:, :, c] = np.where(cell_mask > 0, color[c], img_data[:, :, c])
-            
-            # Record borders if requested
-            if with_border or edge_blur:
-                cv2.polylines(edges_mask, [points], True, 255, 1)
-        
-        # Apply edge blur if requested
-        if edge_blur and edges_mask is not None:
-            # Create convolution kernel based on requested blur type
-            if blur_type == 'mean':
-                # Simple box/mean blur kernel
-                kernel = np.ones((blur_kernel_size, blur_kernel_size), np.float32) / (blur_kernel_size * blur_kernel_size)
-            elif blur_type == 'motion':
-                # Motion blur kernel (horizontal direction)
-                kernel = np.zeros((blur_kernel_size, blur_kernel_size), np.float32)
-                kernel[blur_kernel_size // 2, :] = 1.0 / blur_kernel_size
-            else:
-                # Default to mean blur
-                kernel = np.ones((blur_kernel_size, blur_kernel_size), np.float32) / (blur_kernel_size * blur_kernel_size)
-            
-            # Apply convolution to the edges
-            edges_blurred = cv2.filter2D(edges_mask, -1, kernel)
-            
-            # Dilate to increase the edge area for better visibility of blur
-            kernel_dilate = np.ones((3, 3), np.uint8)
-            edges_dilated = cv2.dilate(edges_blurred, kernel_dilate, iterations=1)
-            
-            # Create mask for blending
-            edge_blend_mask = edges_dilated / 255.0
-            
-            # If we're not drawing borders, blur them into the background
-            if not with_border:
-                # Create a blurred version of the image
-                img_blurred = cv2.filter2D(img_data, -1, kernel)
-                
-                # Apply to original image only at the edge locations
-                for c in range(3):
-                    img_data[:, :, c] = img_data[:, :, c] * (1 - edge_blend_mask) + img_blurred[:, :, c] * edge_blend_mask
-            else:
-                # If borders are already drawn, just enhance them with blur
-                for c in range(3):
-                    # Darken the edges
-                    img_data[:, :, c] = np.where(edges_mask > 0, img_data[:, :, c] // 2, img_data[:, :, c])
-        
-        # Draw borders directly as dark lines if requested and no blur
-        if with_border and not edge_blur:
-            for i, cell in enumerate(self.new_vertices):
-                # Normalize and scale vertices
-                cell_x = ((cell[:, 0] - x_min) / (x_max - x_min) * (width - 1)).astype(int)
-                cell_y = ((cell[:, 1] - y_min) / (y_max - y_min) * (height - 1)).astype(int)
-                
-                points = np.vstack([cell_x, cell_y]).T
-                points = points.reshape((-1, 1, 2)).astype(np.int32)
-                
-                # Draw black border lines
-                cv2.polylines(img_data, [points], True, (0, 0, 0), 1)
-        
-        # Save if path specified
-        if self.save and path is not None:
-            if not os.path.exists(path):
-                os.makedirs(path)
-            
-            output_file = os.path.join(
-                path, 
-                f"{self.size}Disc_VPLCProfile_{self.sim_number}_{self.save_name}.jpg"
-            )
-            from utils.image_processing import save_image
-            save_image(img_data, path, os.path.basename(output_file), format='jpg', quality=self.jpeg_quality)
-            
-        # Return the image data
-        return img_data
-    
-    def get_cell_masks(self, active_only=False, time_step=None, threshold=0.1):
-        """
-        Get cell masks for labeling.
-        
-        Args:
-            active_only (bool): If True, only return masks for active cells.
-            time_step (int): Time step to check for active cells. Required if active_only is True.
-            threshold (float): Activity threshold for determining active cells.
-        
+            size: Kernel size (pixels).
+            blur_type: Type of blur ('mean' or 'motion').
+
         Returns:
-            numpy.ndarray: Array where each pixel value corresponds to a cell ID,
-                           or 0 for inactive cells if active_only=True.
+            Blur kernel as float32 array.
         """
-        # Return all cell masks
-        if not active_only:
+        if blur_type == 'mean':
+            return np.ones((size, size), np.float32) / (size * size)
+        elif blur_type == 'motion':
+            kernel = np.zeros((size, size), np.float32)
+            kernel[size // 2, :] = 1.0 / size
+            return kernel
+        else:
+            # Default to mean blur
+            return np.ones((size, size), np.float32) / (size * size)
+
+    def get_cell_masks(
+        self,
+        active_only: bool = False,
+        time_step: Optional[int] = None,
+        threshold: float = 0.1
+    ) -> np.ndarray:
+        """
+        Get cell mask image.
+
+        Args:
+            active_only: If True, return only active cells.
+            time_step: Required when active_only=True.
+            threshold: Calcium threshold for determining active cells (µM).
+
+        Returns:
+            2D array where each pixel contains cell ID (or 0 for background).
+
+        Raises:
+            ValueError: If active_only=True but time_step not provided.
+        """
+        if active_only:
+            if time_step is None:
+                raise ValueError("time_step must be provided when active_only=True")
+
+            # Create mask with only active cells
+            active_cells = self.get_active_cells(time_step, threshold)
+            active_mask = np.zeros_like(self.cells_mask)
+
+            for cell_id in active_cells:
+                active_mask[self.cells_mask == (cell_id + 1)] = cell_id + 1
+
+            return active_mask
+        else:
             return self.cells_mask.copy()
-        
-        # Validate parameters for active cell filtering
-        if time_step is None:
-            raise ValueError("time_step must be provided when active_only=True")
-        
-        # Get active cells
+
+    def get_active_cells(self, time_step: int, threshold: float = 0.1) -> List[int]:
+        """
+        Get list of active cell indices at a given time step.
+
+        A cell is considered active if its calcium concentration exceeds the threshold.
+
+        Args:
+            time_step: Time step to query.
+            threshold: Calcium concentration threshold (µM).
+
+        Returns:
+            List of active cell indices (0-indexed).
+        """
+        calcium = self.disc_dynamics[:, 0, time_step]
+        active_indices = np.where(calcium > threshold)[0]
+        return active_indices.tolist()
+
+    def generate_label_data(self, time_step: int, threshold: float = 0.1) -> Dict[str, Any]:
+        """
+        Generate comprehensive label data for a time step.
+
+        Args:
+            time_step: Time step to generate labels for.
+            threshold: Activity threshold for cell detection.
+
+        Returns:
+            Dictionary containing:
+            - active_cells: List of active cell IDs
+            - calcium_values: Calcium concentration per active cell
+            - n_active: Number of active cells
+            - simulation_info: Metadata about this simulation
+        """
         active_cells = self.get_active_cells(time_step, threshold)
-        
-        # Create a filtered mask with only active cells
-        filtered_mask = np.zeros_like(self.cells_mask)
-        for cell_id in active_cells:
-            filtered_mask[self.cells_mask == cell_id + 1] = cell_id + 1
-            
-        return filtered_mask
-    
-    def get_active_cells(self, time_step, threshold=0.1):
-        """
-        Get active cells at the specified time step.
-        
-        Args:
-            time_step (int): Time step to check.
-            threshold (float): Activity threshold.
-            
-        Returns:
-            list: List of active cell IDs.
-        """
-        activity = self.disc_dynamics[:, 0, time_step]
-        active_cells = np.where(activity > threshold)[0]
-        return active_cells.tolist()
-    
-    def generate_label_data(self, time_step, threshold=0.1):
-        """
-        Generate label data for the current time step.
-        This method is deprecated - use utils.labeling.generate_labels instead.
-        Kept for backward compatibility.
-        
-        Args:
-            time_step (int): Time step.
-            threshold (float): Activity threshold.
-            
-        Returns:
-            dict: Label data dictionary including active cells and their activity levels.
-        """
-        # Use the more complete implementation from utils.labeling
-        from utils.labeling import generate_labels
-        return generate_labels(self, time_step, threshold)
+        calcium_values = {
+            cell_id: float(self.disc_dynamics[cell_id, 0, time_step])
+            for cell_id in active_cells
+        }
+
+        return {
+            'active_cells': active_cells,
+            'calcium_values': calcium_values,
+            'n_active': len(active_cells),
+            'simulation_info': {
+                'sim_number': self.sim_number,
+                'size': self.size,
+                'time_step': time_step,
+                'total_cells': self.n_cells
+            }
+        }
+
+    def __repr__(self) -> str:
+        """String representation of Pouch object."""
+        return (f"Pouch(size='{self.size}', n_cells={self.n_cells}, "
+                f"sim_number={self.sim_number}, T={self.T})")
+
+    def __str__(self) -> str:
+        """Detailed string representation."""
+        return (f"Calcium Signaling Simulation\n"
+                f"  Geometry: {self.size} ({self.n_cells} cells)\n"
+                f"  Duration: {self.T * self.dt:.0f}s ({self.T} steps @ {self.dt}s)\n"
+                f"  Output: {self.output_size[0]}×{self.output_size[1]} pixels\n"
+                f"  Sim ID: {self.sim_number}")
