@@ -6,6 +6,8 @@ opencv-python>=4.5.0
 scikit-image>=0.18.0
 peakutils>=1.3.0
 Pillow>=8.0.0
+# For JIT compilation and performance optimization
+numba>=0.55.0
 # For memory monitoring and performance
 psutil>=5.8.0
 # For animation saving
