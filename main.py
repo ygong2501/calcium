@@ -1,29 +1,29 @@
 """
 Main entry point for calcium simulation system.
 """
-from utils.dataset import generate_stats
-from utils.labeling import generate_labels, save_label
-from utils.image_processing import apply_all_defects, save_image
-from core.geometry_loader import GeometryLoader
-from core.parameters import SimulationParameters
-from core.pouch import Pouch
 import os
 import sys
 import argparse
 import random
 import json
-import numpy as np
 import time
-import multiprocessing
-from pathlib import Path
 import gc
-import re
-import psutil
-import tkinter as tk
-import cv2
+import multiprocessing
+import datetime
 
-# Add parent directory to path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import numpy as np
+import cv2
+import psutil
+
+from utils.dataset import generate_stats
+from utils.labeling import generate_labels, save_label
+from utils.image_processing import apply_all_defects, save_image
+from core.parameters import SimulationParameters
+from core.pouch import Pouch
+
+# Add parent directory to path (only needed when running as script)
+if __name__ == "__main__":
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 def generate_random_defect_config():
@@ -92,34 +92,6 @@ def generate_random_defect_config():
     return config
 
 
-def get_next_batch_index(output_dir):
-    """
-    Get the next available batch index for simulation results.
-    
-    Args:
-        output_dir (str): Output directory to scan for existing batches.
-        
-    Returns:
-        int: Next available batch index.
-    """
-    # Check for directories matching simulation_batch_X pattern
-    pattern = re.compile(r'simulation_batch_(\d+)')
-    max_index = -1
-    
-    # Look for existing batch directories
-    for item in os.listdir(output_dir):
-        item_path = os.path.join(output_dir, item)
-        if os.path.isdir(item_path):
-            match = pattern.match(item)
-            if match:
-                try:
-                    index = int(match.group(1))
-                    max_index = max(max_index, index)
-                except ValueError:
-                    continue
-    
-    # Return next available index
-    return max_index + 1
 
 
 def monitor_memory():
@@ -197,9 +169,8 @@ def generate_simulation_batch(num_simulations, output_dir, pouch_sizes=None,
     # Use the output directory directly instead of creating batch subdirectories
     batch_dir = output_dir
     os.makedirs(batch_dir, exist_ok=True)
-    
+
     # Generate a unique run identifier for this batch
-    import datetime
     batch_run_id = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
     
     # Create common directories for all simulations

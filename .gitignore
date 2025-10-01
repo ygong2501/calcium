@@ -68,5 +68,12 @@ coverage.xml
 *.old
 *.orig
 
+# R history files
+.Rhistory
+
+# PDF documents (reports, proposals)
+*.pdf
+!LICENSE.pdf
+
 # Keep the .gitignore file itself
 !.gitignore
