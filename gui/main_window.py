@@ -343,17 +343,8 @@ class MainWindow:
         # Add defect config to batch params
         batch_params['defect_config'] = defect_config
 
-        # Ask for output directory, defaulting to 'output'
-        output_dir = filedialog.askdirectory(
-            title="Select Output Directory for Batch Generation",
-            initialdir="output"
-        )
-
-        if not output_dir:
-            # Use default output directory if user cancels
-            output_dir = "output"
-            # Ensure directory exists
-            os.makedirs(output_dir, exist_ok=True)
+        # Use fixed dataset directory structure
+        output_dir = "dataset"
 
         # Update status
         self.preview_panel.status_var.set("Starting batch generation...")

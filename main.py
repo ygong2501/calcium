@@ -115,10 +115,10 @@ def monitor_memory():
 def generate_simulation_batch(num_simulations, output_dir, pouch_sizes=None,
                               sim_types=None, time_steps=None, defect_configs=None,
                               progress_callback=None,
-                              memory_threshold=70, create_stats=True, 
+                              memory_threshold=70, create_stats=True,
                               edge_blur=False, blur_kernel_size=3, blur_type='mean',
                               generate_masks=True, generate_labels=False, image_size="512x512", jpeg_quality=90,
-                              save_pouch=False):
+                              save_pouch=False, dataset_split='train'):
     """
     Batch generate simulation images, labels, and individual binary masks for each cell.
     Includes memory management, sequential batch processing, and file sequence management.
@@ -166,23 +166,26 @@ def generate_simulation_batch(num_simulations, output_dir, pouch_sizes=None,
         # Select a subset of frames for efficiency
         time_steps = list(range(0, 18000, 200))  # Every 40 seconds
 
-    # Use the output directory directly instead of creating batch subdirectories
+    # Create dataset structure with train/val/test splits
     batch_dir = output_dir
     os.makedirs(batch_dir, exist_ok=True)
 
     # Generate a unique run identifier for this batch
     batch_run_id = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
-    
-    # Create common directories for all simulations
-    common_img_dir = os.path.join(batch_dir, 'images')
-    common_mask_dir = os.path.join(batch_dir, 'masks')
+
+    # Create dataset directory structure
+    common_img_dir = os.path.join(batch_dir, 'images', dataset_split)
+    common_mask_dir = os.path.join(batch_dir, 'masks', dataset_split)
+    common_prompt_dir = os.path.join(batch_dir, 'prompts', dataset_split)
+
     os.makedirs(common_img_dir, exist_ok=True)
     os.makedirs(common_mask_dir, exist_ok=True)
-    
-    # Only create labels directory if needed
+    os.makedirs(common_prompt_dir, exist_ok=True)
+
+    # Only create labels directory if needed (deprecated, use prompts instead)
     common_label_dir = None
     if generate_labels:
-        common_label_dir = os.path.join(batch_dir, 'labels')
+        common_label_dir = os.path.join(batch_dir, 'labels', dataset_split)
         os.makedirs(common_label_dir, exist_ok=True)
     
     # Results to return
