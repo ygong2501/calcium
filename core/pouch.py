@@ -274,47 +274,21 @@ class Pouch:
         try:
             # Create a blank image with specified output size
             width, height = self.output_size
-            img_data = np.zeros((height, width, 3), dtype=np.uint8)
-            
+
+            # Always use grayscale for cleaner output
+            img_data = np.zeros((height, width), dtype=np.uint8)
+
             # Get calcium activity for the current time step
             calcium_activity = self.disc_dynamics[:, 0, time_step]
-            
+
             # Normalization for activity values
             vmin = 0
             vmax = max(np.max(calcium_activity), 0.5)  # Ensure bright cells are visible
-            
-            # Define color mapping function similar to matplotlib's colormap
-            def map_value_to_color(value, colormap_name='gray'):
+
+            # Define grayscale mapping function
+            def map_value_to_grayscale(value):
                 normalized = np.clip((value - vmin) / (vmax - vmin), 0, 1)
-                
-                if colormap_name == 'gray':
-                    # Simple grayscale mapping
-                    color_val = int(255 * normalized)
-                    return (color_val, color_val, color_val)
-                elif colormap_name == 'viridis':
-                    # Simplified viridis-like mapping
-                    if normalized < 0.25:
-                        return (68, 1, 84)
-                    elif normalized < 0.5:
-                        return (59, 82, 139)
-                    elif normalized < 0.75:
-                        return (33, 145, 140)
-                    else:
-                        return (253, 231, 37)
-                elif colormap_name == 'plasma':
-                    # Simplified plasma-like mapping
-                    if normalized < 0.25:
-                        return (13, 8, 135)
-                    elif normalized < 0.5:
-                        return (156, 23, 158)
-                    elif normalized < 0.75:
-                        return (237, 121, 83)
-                    else:
-                        return (240, 249, 33)
-                else:
-                    # Default to grayscale
-                    color_val = int(255 * normalized)
-                    return (color_val, color_val, color_val)
+                return int(255 * normalized)
             
             # Find the scaling factors to map cell vertices to the image dimensions
             x_coords = [v[:, 0] for v in self.new_vertices]
@@ -333,26 +307,21 @@ class Pouch:
             
             # Draw cells directly using OpenCV for better performance
             for i, cell in enumerate(self.new_vertices):
-                # Get cell activity and map to color
+                # Get cell activity and map to grayscale value
                 cell_activity = calcium_activity[i]
-                color = map_value_to_color(cell_activity, colormap)
-                
+                gray_value = map_value_to_grayscale(cell_activity)
+
                 # Normalize and scale vertices to image coordinates
                 cell_x = ((cell[:, 0] - x_min) / (x_max - x_min) * (width - 1)).astype(int)
                 cell_y = ((cell[:, 1] - y_min) / (y_max - y_min) * (height - 1)).astype(int)
-                
+
                 # Create a polygon for this cell
                 points = np.vstack([cell_x, cell_y]).T
                 points = points.reshape((-1, 1, 2)).astype(np.int32)
-                
-                # Fill the cell
-                cell_mask = np.zeros((height, width), dtype=np.uint8)
-                cv2.fillPoly(cell_mask, [points], color=1)
-                
-                # Apply cell color
-                for c in range(3):  # RGB channels
-                    img_data[:, :, c] = np.where(cell_mask > 0, color[c], img_data[:, :, c])
-                
+
+                # Fill the cell with grayscale value
+                cv2.fillPoly(img_data, [points], color=int(gray_value))
+
                 # Draw borders if requested
                 if with_border or edge_blur:
                     cv2.polylines(edges_mask, [points], True, 255, 1)
@@ -370,43 +339,42 @@ class Pouch:
                 else:
                     # Default to mean blur
                     kernel = np.ones((blur_kernel_size, blur_kernel_size), np.float32) / (blur_kernel_size * blur_kernel_size)
-                
+
                 # Apply convolution to the edges
                 edges_blurred = cv2.filter2D(edges_mask, -1, kernel)
-                
+
                 # Dilate to increase the edge area for better visibility of blur
                 kernel_dilate = np.ones((3, 3), np.uint8)
                 edges_dilated = cv2.dilate(edges_blurred, kernel_dilate, iterations=1)
-                
+
                 # Create mask for blending
                 edge_blend_mask = edges_dilated / 255.0
-                
+
                 # If we're not drawing borders, blur them into the background
                 if not with_border:
                     # Create a blurred version of the image
                     img_blurred = cv2.filter2D(img_data, -1, kernel)
-                    
-                    # Apply to original image only at the edge locations
-                    for c in range(3):
-                        img_data[:, :, c] = img_data[:, :, c] * (1 - edge_blend_mask) + img_blurred[:, :, c] * edge_blend_mask
+
+                    # Apply to original image only at the edge locations (grayscale)
+                    img_data = img_data * (1 - edge_blend_mask) + img_blurred * edge_blend_mask
+                    img_data = img_data.astype(np.uint8)
                 else:
                     # If borders are already drawn, just enhance them with blur
-                    for c in range(3):
-                        # Darken the edges
-                        img_data[:, :, c] = np.where(edges_mask > 0, img_data[:, :, c] // 2, img_data[:, :, c])
-            
+                    # Darken the edges
+                    img_data = np.where(edges_mask > 0, img_data // 2, img_data)
+
             # Draw borders directly as dark lines if requested and no blur
             if with_border and not edge_blur:
                 for i, cell in enumerate(self.new_vertices):
                     # Normalize and scale vertices
                     cell_x = ((cell[:, 0] - x_min) / (x_max - x_min) * (width - 1)).astype(int)
                     cell_y = ((cell[:, 1] - y_min) / (y_max - y_min) * (height - 1)).astype(int)
-                    
+
                     points = np.vstack([cell_x, cell_y]).T
                     points = points.reshape((-1, 1, 2)).astype(np.int32)
-                    
+
                     # Draw black border lines
-                    cv2.polylines(img_data, [points], True, (0, 0, 0), 1)
+                    cv2.polylines(img_data, [points], True, 0, 1)
             
             # Verify the image size matches the expected output_size
             if img_data.shape[:2] != (self.output_size[1], self.output_size[0]):
@@ -418,10 +386,8 @@ class Pouch:
             # Save if output path specified
             if output_path is not None:
                 from utils.image_processing import save_image
-                # Use quality parameter stored in the object
-                quality = self.jpeg_quality
                 # Always use self.output_size to ensure consistent dimensions
-                save_image(img_data, os.path.dirname(output_path), os.path.basename(output_path), format='jpg', quality=quality, target_size=self.output_size)
+                save_image(img_data, os.path.dirname(output_path), os.path.basename(output_path), format='png', bit_depth=10, target_size=self.output_size)
             
             return img_data
             

@@ -175,21 +175,22 @@ def apply_all_defects(image, cells_mask, config):
     return result
 
 
-def save_image(image, output_path, filename, format='jpg', quality=90, target_size=None):
+def save_image(image, output_path, filename, format='png', quality=90, target_size=None, bit_depth=10):
     """
     Save image to file, optionally resizing to target size.
-    
+
     Args:
         image (numpy.ndarray): Image to save.
         output_path (str): Output directory.
         filename (str): Filename.
-        format (str): Image format, 'jpg' or 'png'.
+        format (str): Image format, 'jpg', 'png', or 'png16' (default: 'png').
         quality (int): JPEG quality (0-100), higher is better quality. Only used for JPEG format.
         target_size (tuple, optional): Target size (width, height) to resize image before saving.
-    
+        bit_depth (int): Bit depth for PNG images (8, 10, or 16). 10-bit values stored in 16-bit PNG.
+
     Returns:
         str: Full path to saved file.
-        
+
     Raises:
         ValueError: If image format is invalid
         IOError: If saving fails
@@ -197,62 +198,89 @@ def save_image(image, output_path, filename, format='jpg', quality=90, target_si
     # Create output directory if it doesn't exist
     if not os.path.exists(output_path):
         os.makedirs(output_path, exist_ok=True)
-    
+
     # Normalize format to lowercase
     format = format.lower()
-    
+
     # Get the base filename without extension
     base_filename = os.path.splitext(filename)[0]
-    
+
     # Add appropriate extension based on specified format
     if format == 'jpg' or format == 'jpeg':
         file_extension = '.jpg'
-    else:
+    elif format in ['png', 'png16']:
         file_extension = '.png'
-    
+    else:
+        file_extension = '.png'  # Default to PNG
+
     # Final filename with correct extension
     final_filename = base_filename + file_extension
-    
+
     # Full path to output file
     file_path = os.path.join(output_path, final_filename)
-    
+
     # Validate image
     if not isinstance(image, np.ndarray):
         raise ValueError("Image must be a numpy array")
-    
+
     if len(image.shape) not in [2, 3]:
         raise ValueError(f"Unexpected image shape: {image.shape}")
-    
+
     # Resize image if target_size is specified
     if target_size is not None:
         image = resize_image(image, target_size)
-    
-    # Convert image to uint8 if needed
-    if image.dtype != np.uint8:
-        if image.max() <= 1.0:
-            image = (image * 255).astype(np.uint8)
-        else:
-            image = image.astype(np.uint8)
-    
+
     try:
-        # Check if grayscale or RGB
-        if len(image.shape) == 2 or image.shape[2] == 1:
-            # Grayscale image
-            if format == 'jpg' or format == 'jpeg':
-                # For JPG, use compression quality parameter
-                # Compression params for jpg: [cv2.IMWRITE_JPEG_QUALITY, quality, 0]
+        # Handle different formats
+        if format == 'jpg' or format == 'jpeg':
+            # Convert to uint8 for JPEG
+            if image.dtype != np.uint8:
+                if image.max() <= 1.0:
+                    image = (image * 255).astype(np.uint8)
+                else:
+                    image = image.astype(np.uint8)
+
+            # Check if grayscale or RGB
+            if len(image.shape) == 2 or (len(image.shape) == 3 and image.shape[2] == 1):
                 cv2.imwrite(file_path, image, [cv2.IMWRITE_JPEG_QUALITY, quality])
             else:
-                cv2.imwrite(file_path, image)
-        else:
-            # RGB image - convert from RGB to BGR for OpenCV
-            if format == 'jpg' or format == 'jpeg':
-                # For JPG, use compression quality parameter
-                cv2.imwrite(file_path, cv2.cvtColor(image, cv2.COLOR_RGB2BGR), 
+                cv2.imwrite(file_path, cv2.cvtColor(image, cv2.COLOR_RGB2BGR),
                            [cv2.IMWRITE_JPEG_QUALITY, quality])
+
+        elif format in ['png', 'png16'] and bit_depth == 10:
+            # 10-bit grayscale stored in 16-bit PNG
+            # Convert to grayscale if RGB
+            if len(image.shape) == 3 and image.shape[2] == 3:
+                image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+
+            # Convert to 10-bit range (0-1023) stored in uint16
+            if image.dtype == np.uint8:
+                # Scale from 8-bit (0-255) to 10-bit (0-1023)
+                image_16bit = (image.astype(np.uint16) * 4)  # 255 * 4 = 1020 (close to 1023)
+            elif image.max() <= 1.0:
+                # Normalized float, scale to 10-bit
+                image_16bit = (image * 1023).astype(np.uint16)
+            else:
+                # Assume already in appropriate range
+                image_16bit = np.clip(image, 0, 1023).astype(np.uint16)
+
+            # Save as 16-bit PNG
+            cv2.imwrite(file_path, image_16bit)
+
+        else:
+            # Standard 8-bit PNG
+            if image.dtype != np.uint8:
+                if image.max() <= 1.0:
+                    image = (image * 255).astype(np.uint8)
+                else:
+                    image = image.astype(np.uint8)
+
+            # Check if grayscale or RGB
+            if len(image.shape) == 2 or (len(image.shape) == 3 and image.shape[2] == 1):
+                cv2.imwrite(file_path, image)
             else:
                 cv2.imwrite(file_path, cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
-        
+
         return file_path
     except Exception as e:
         raise IOError(f"Failed to save image to {file_path}: {str(e)}")

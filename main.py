@@ -291,10 +291,10 @@ def generate_simulation_batch(num_simulations, output_dir, pouch_sizes=None,
                         )
 
                         # Use consistent naming pattern for images and masks
-                        # Format: {sim_name}_t{time_step}_{batch_run_id}.jpg
+                        # Format: {sim_name}_t{time_step}_{batch_run_id}.png (10-bit grayscale in 16-bit PNG)
                         batch_id_suffix = f"_{batch_run_id}"
-                        img_filename = f"{sim_name}_t{time_step:05d}{batch_id_suffix}.jpg"
-                        img_path = save_image(processed_image, img_dir, img_filename, format='jpg', quality=jpeg_quality, target_size=output_size)
+                        img_filename = f"{sim_name}_t{time_step:05d}{batch_id_suffix}.png"
+                        img_path = save_image(processed_image, img_dir, img_filename, format='png', bit_depth=10, target_size=output_size)
                         image_files.append(img_path)
                         
                         # Generate and save labels only if requested
@@ -336,9 +336,9 @@ def generate_simulation_batch(num_simulations, output_dir, pouch_sizes=None,
                                     del instance_mask
                             
                             # Save the combined mask with the same base filename as the image (including batch run ID)
-                            # Format: {sim_name}_t{time_step}_{batch_run_id}_mask_combined.jpg
-                            combined_mask_filename = f"{sim_name}_t{time_step:05d}{batch_id_suffix}_mask_combined.jpg"
-                            combined_mask_path = save_image(combined_mask, mask_dir, combined_mask_filename, format='jpg', quality=jpeg_quality, target_size=output_size)
+                            # Format: {sim_name}_t{time_step}_{batch_run_id}_mask_combined.png
+                            combined_mask_filename = f"{sim_name}_t{time_step:05d}{batch_id_suffix}_mask_combined.png"
+                            combined_mask_path = save_image(combined_mask, mask_dir, combined_mask_filename, format='png', bit_depth=8, target_size=output_size)
                             mask_files.append(combined_mask_path)
                             
                             # Free memory
