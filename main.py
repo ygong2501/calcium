@@ -336,9 +336,9 @@ def generate_simulation_batch(num_simulations, output_dir, pouch_sizes=None,
                                     del instance_mask
                             
                             # Save the combined mask with the same base filename as the image (including batch run ID)
-                            # Format: {sim_name}_t{time_step}_{batch_run_id}_mask_combined.png
+                            # Format: {sim_name}_t{time_step}_{batch_run_id}_mask_combined.png (1-bit binary for space efficiency)
                             combined_mask_filename = f"{sim_name}_t{time_step:05d}{batch_id_suffix}_mask_combined.png"
-                            combined_mask_path = save_image(combined_mask, mask_dir, combined_mask_filename, format='png', bit_depth=8, target_size=output_size)
+                            combined_mask_path = save_image(combined_mask, mask_dir, combined_mask_filename, format='png', bit_depth=1, target_size=output_size)
                             mask_files.append(combined_mask_path)
                             
                             # Free memory

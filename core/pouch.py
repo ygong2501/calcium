@@ -275,8 +275,8 @@ class Pouch:
             # Create a blank image with specified output size
             width, height = self.output_size
 
-            # Always use grayscale for cleaner output
-            img_data = np.zeros((height, width), dtype=np.uint8)
+            # Use grayscale with alpha channel for transparency (2 channels: gray + alpha)
+            img_data = np.zeros((height, width, 2), dtype=np.uint8)
 
             # Get calcium activity for the current time step
             calcium_activity = self.disc_dynamics[:, 0, time_step]
@@ -319,8 +319,9 @@ class Pouch:
                 points = np.vstack([cell_x, cell_y]).T
                 points = points.reshape((-1, 1, 2)).astype(np.int32)
 
-                # Fill the cell with grayscale value
-                cv2.fillPoly(img_data, [points], color=int(gray_value))
+                # Fill the cell with grayscale value and full opacity
+                # Color is [gray_value, 255] for grayscale + alpha
+                cv2.fillPoly(img_data, [points], color=(int(gray_value), 255))
 
                 # Draw borders if requested
                 if with_border or edge_blur:
@@ -352,16 +353,18 @@ class Pouch:
 
                 # If we're not drawing borders, blur them into the background
                 if not with_border:
-                    # Create a blurred version of the image
+                    # Create a blurred version of the image (blur both channels)
                     img_blurred = cv2.filter2D(img_data, -1, kernel)
 
-                    # Apply to original image only at the edge locations (grayscale)
-                    img_data = img_data * (1 - edge_blend_mask) + img_blurred * edge_blend_mask
+                    # Apply to original image only at the edge locations (2-channel: gray+alpha)
+                    edge_blend_mask_2ch = np.stack([edge_blend_mask, edge_blend_mask], axis=-1)
+                    img_data = img_data * (1 - edge_blend_mask_2ch) + img_blurred * edge_blend_mask_2ch
                     img_data = img_data.astype(np.uint8)
                 else:
                     # If borders are already drawn, just enhance them with blur
-                    # Darken the edges
-                    img_data = np.where(edges_mask > 0, img_data // 2, img_data)
+                    # Darken the edges (only affect grayscale channel, not alpha)
+                    edges_mask_expanded = np.expand_dims(edges_mask > 0, axis=-1)
+                    img_data[:, :, 0] = np.where(edges_mask > 0, img_data[:, :, 0] // 2, img_data[:, :, 0])
 
             # Draw borders directly as dark lines if requested and no blur
             if with_border and not edge_blur:
@@ -373,8 +376,8 @@ class Pouch:
                     points = np.vstack([cell_x, cell_y]).T
                     points = points.reshape((-1, 1, 2)).astype(np.int32)
 
-                    # Draw black border lines
-                    cv2.polylines(img_data, [points], True, 0, 1)
+                    # Draw black border lines (only on grayscale channel)
+                    cv2.polylines(img_data[:, :, 0], [points], True, 0, 1)
             
             # Verify the image size matches the expected output_size
             if img_data.shape[:2] != (self.output_size[1], self.output_size[0]):

@@ -248,24 +248,53 @@ def save_image(image, output_path, filename, format='png', quality=90, target_si
                            [cv2.IMWRITE_JPEG_QUALITY, quality])
 
         elif format in ['png', 'png16'] and bit_depth == 10:
-            # 10-bit grayscale stored in 16-bit PNG
-            # Convert to grayscale if RGB
-            if len(image.shape) == 3 and image.shape[2] == 3:
+            # 10-bit grayscale stored in 16-bit PNG (with optional alpha channel)
+            # Handle grayscale+alpha (2 channels)
+            if len(image.shape) == 3 and image.shape[2] == 2:
+                # Grayscale + Alpha channel
+                gray_channel = image[:, :, 0]
+                alpha_channel = image[:, :, 1]
+
+                # Scale grayscale from 8-bit to 10-bit
+                if gray_channel.dtype == np.uint8:
+                    gray_16bit = (gray_channel.astype(np.uint16) * 4)
+                else:
+                    gray_16bit = np.clip(gray_channel, 0, 1023).astype(np.uint16)
+
+                # Scale alpha to 16-bit
+                alpha_16bit = (alpha_channel.astype(np.uint16) * 257)  # 255 * 257 = 65535
+
+                # Combine into 16-bit grayscale+alpha image
+                image_16bit = np.stack([gray_16bit, alpha_16bit], axis=-1)
+                cv2.imwrite(file_path, image_16bit)
+
+            elif len(image.shape) == 3 and image.shape[2] == 3:
+                # Convert RGB to grayscale
                 image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-
-            # Convert to 10-bit range (0-1023) stored in uint16
-            if image.dtype == np.uint8:
-                # Scale from 8-bit (0-255) to 10-bit (0-1023)
-                image_16bit = (image.astype(np.uint16) * 4)  # 255 * 4 = 1020 (close to 1023)
-            elif image.max() <= 1.0:
-                # Normalized float, scale to 10-bit
-                image_16bit = (image * 1023).astype(np.uint16)
+                # Scale to 10-bit and save
+                image_16bit = (image.astype(np.uint16) * 4)
+                cv2.imwrite(file_path, image_16bit)
             else:
-                # Assume already in appropriate range
-                image_16bit = np.clip(image, 0, 1023).astype(np.uint16)
+                # Single channel grayscale
+                if image.dtype == np.uint8:
+                    image_16bit = (image.astype(np.uint16) * 4)
+                elif image.max() <= 1.0:
+                    image_16bit = (image * 1023).astype(np.uint16)
+                else:
+                    image_16bit = np.clip(image, 0, 1023).astype(np.uint16)
+                cv2.imwrite(file_path, image_16bit)
 
-            # Save as 16-bit PNG
-            cv2.imwrite(file_path, image_16bit)
+        elif format in ['png', 'png16'] and bit_depth == 1:
+            # 1-bit binary PNG for masks (most space-efficient)
+            # Ensure binary values (0 or 1)
+            if image.dtype != np.uint8:
+                image = image.astype(np.uint8)
+
+            # Threshold to ensure binary (0 or 255)
+            binary_image = np.where(image > 0, 255, 0).astype(np.uint8)
+
+            # Save with maximum compression
+            cv2.imwrite(file_path, binary_image, [cv2.IMWRITE_PNG_COMPRESSION, 9])
 
         else:
             # Standard 8-bit PNG
@@ -275,10 +304,14 @@ def save_image(image, output_path, filename, format='png', quality=90, target_si
                 else:
                     image = image.astype(np.uint8)
 
-            # Check if grayscale or RGB
+            # Check if grayscale, grayscale+alpha, or RGB
             if len(image.shape) == 2 or (len(image.shape) == 3 and image.shape[2] == 1):
                 cv2.imwrite(file_path, image)
+            elif len(image.shape) == 3 and image.shape[2] == 2:
+                # Grayscale + Alpha (8-bit)
+                cv2.imwrite(file_path, image)
             else:
+                # RGB or RGBA
                 cv2.imwrite(file_path, cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
 
         return file_path
