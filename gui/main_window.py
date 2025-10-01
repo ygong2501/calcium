@@ -376,139 +376,94 @@ class MainWindow:
             batch_params (dict): Batch generation parameters.
             output_dir (str): Output directory.
         """
-        # Create cancel flag
         self.cancel_batch = False
 
-        # Add cancel button to the interface
-        self.cancel_btn = ttk.Button(
-            self.action_bar, text="Cancel Batch",
-            command=self._cancel_batch_generation
-        )
-        self.root.after(0, lambda: self.cancel_btn.pack(side=tk.RIGHT, padx=5, pady=5))
-
-        # Create progress bar
+        # Create progress UI
         progress_frame = ttk.Frame(self.action_bar)
-        self.root.after(0, lambda: progress_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5))
+        progress_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
 
-        self.batch_progress = ttk.Progressbar(progress_frame, orient=tk.HORIZONTAL, length=100, mode='determinate')
-        self.batch_progress.pack(fill=tk.X, expand=True)
+        progress_bar = ttk.Progressbar(progress_frame, mode='determinate')
+        progress_bar.pack(fill=tk.X, expand=True)
 
-        self.progress_label = ttk.Label(progress_frame, text="Preparing...")
-        self.progress_label.pack(pady=2)
+        progress_label = ttk.Label(progress_frame, text="Preparing...")
+        progress_label.pack(pady=2)
 
-        # Setup GUI updater with handlers
+        cancel_btn = ttk.Button(self.action_bar, text="Cancel Batch",
+                                command=self._cancel_batch_generation)
+        cancel_btn.pack(side=tk.RIGHT, padx=5, pady=5)
+
+        # Setup GUI updater
+        def update_progress(current, total, details=None):
+            percent = int((current / total) * 100) if total > 0 else 0
+            progress_bar['value'] = percent
+            batch_info = f"Batch {details['batch_idx'] + 1} - " if details and 'batch_idx' in details else ""
+            progress_label['text'] = f"{batch_info}{current}/{total} ({percent}%)"
+
         handlers = {
             'status': lambda message: self.preview_panel.status_var.set(message),
-            'progress': self._handle_progress_update,
+            'progress': update_progress
         }
         self.gui_updater.start_updates(handlers)
 
-        # Define callbacks for batch controller
+        # Define callbacks
         def progress_callback(current, total, details=None):
             if self.cancel_batch:
-                return True  # Signal cancellation
-
+                return True
             self.gui_updater.queue_progress(current, total, details)
-            self.gui_updater.queue_status(f"Generating simulation {current}/{total}...")
             return False
 
-        def status_callback(message):
-            self.gui_updater.queue_status(message)
-
         try:
-            # Run batch generation using controller
+            # Run batch generation
             results = self.batch_controller.run_batch_generation(
                 batch_params=batch_params,
                 output_dir=output_dir,
                 progress_callback=progress_callback,
-                status_callback=status_callback
+                status_callback=self.gui_updater.queue_status
             )
 
             # Check if cancelled
             if self.cancel_batch or results.get('cancelled', False):
-                self.gui_updater.queue_status("Batch generation cancelled")
                 return
 
-            # Build success message
-            batch_dir = results.get('output_dir', output_dir)
-            total_simulations = len(results.get('simulations', []))
-            total_images = sum(sim.get('image_count', 0) for sim in results.get('simulations', []))
-
-            success_msg = (
-                f"Batch generation complete.\n"
-                f"Generated {total_simulations} simulations with {total_images} total images.\n"
-            )
-
+            # Build and show success message
+            msg_parts = [
+                f"Generated {len(results.get('simulations', []))} simulations with "
+                f"{sum(s.get('image_count', 0) for s in results.get('simulations', []))} images."
+            ]
             if results.get('csv_path'):
-                success_msg += f"CSV mapping file created at: {os.path.basename(results['csv_path'])}\n"
-
+                msg_parts.append(f"CSV: {os.path.basename(results['csv_path'])}")
             if results.get('video_path'):
-                success_msg += f"Generated video: {os.path.basename(results['video_path'])}\n"
+                msg_parts.append(f"Video: {os.path.basename(results['video_path'])}")
+            msg_parts.append(f"Location: {results.get('output_dir', output_dir)}")
 
-            success_msg += f"Output directory: {batch_dir}"
-
-            # Show success message
-            self.root.after(0, lambda: messagebox.showinfo("Batch Complete", success_msg))
+            self.root.after(0, lambda: messagebox.showinfo("Batch Complete", "\n".join(msg_parts)))
 
         except Exception as e:
-            # Handle errors
             error_msg = f"Error in batch generation: {str(e)}"
-            self.root.after(0, lambda: self.preview_panel.status_var.set(error_msg))
             self.root.after(0, lambda: messagebox.showerror("Batch Error", error_msg))
-
-            # Log detailed error
             import traceback
             traceback.print_exc()
 
         finally:
-            # Stop GUI updater
             self.gui_updater.stop_updates()
-
-            # Clean up UI elements
-            try:
-                if hasattr(self, 'cancel_btn'):
-                    self.root.after(0, lambda: self.cancel_btn.destroy())
-                self.root.after(0, lambda: progress_frame.destroy())
-            except:
-                pass
-
-            # Re-enable buttons
-            self.root.after(0, lambda: self.generate_btn.config(state=tk.NORMAL))
-            self.root.after(0, lambda: self.batch_btn.config(state=tk.NORMAL))
-
-            # Update status
-            self.root.after(0, lambda: self.preview_panel.status_var.set("Batch generation complete"))
+            self.root.after(0, lambda: self._cleanup_batch_ui(progress_frame, cancel_btn))
             self.simulation_running = False
     
-    def _handle_progress_update(self, current, total, details=None):
-        """
-        Handle progress bar updates.
-
-        Args:
-            current (int): Current progress value.
-            total (int): Total progress value.
-            details (dict, optional): Additional progress details.
-        """
-        if total == 0:
-            percent = 0
-        else:
-            percent = int((current / total) * 100)
-
-        self.batch_progress['value'] = percent
-
-        # Update progress label
-        batch_info = ""
-        if details and 'batch_idx' in details:
-            batch_info = f"Batch {details['batch_idx'] + 1} - "
-
-        self.progress_label['text'] = f"{batch_info}{current}/{total} ({percent}%)"
+    def _cleanup_batch_ui(self, progress_frame, cancel_btn):
+        """Clean up batch generation UI elements."""
+        try:
+            progress_frame.destroy()
+            cancel_btn.destroy()
+        except:
+            pass
+        self.generate_btn.config(state=tk.NORMAL)
+        self.batch_btn.config(state=tk.NORMAL)
 
     def _cancel_batch_generation(self):
-        """Cancel an ongoing batch generation process"""
+        """Cancel an ongoing batch generation process."""
         if self.simulation_running:
             self.cancel_batch = True
             self.preview_panel.status_var.set("Cancelling batch generation... Please wait.")
-            self.cancel_btn.config(state=tk.DISABLED)
     
     def save_current_image(self):
         """Save the current preview image."""
