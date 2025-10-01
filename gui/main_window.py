@@ -343,8 +343,9 @@ class MainWindow:
         # Add defect config to batch params
         batch_params['defect_config'] = defect_config
 
-        # Use fixed dataset directory structure
+        # Use fixed dataset directory structure - all data goes to train (no validation needed)
         output_dir = "dataset"
+        batch_params['dataset_split'] = 'train'  # All data for training
 
         # Update status
         self.preview_panel.status_var.set("Starting batch generation...")

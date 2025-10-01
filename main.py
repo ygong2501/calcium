@@ -310,42 +310,29 @@ def generate_simulation_batch(num_simulations, output_dir, pouch_sizes=None,
 
                         # Generate and save only the combined mask if requested
                         if generate_masks:
+                            # Import SAM2 data generation utilities
+                            from utils.sam2_data_generator import process_batch_for_sam2
+
                             # Get active cells for the current time step
                             active_cells = pouch.get_active_cells(time_step)
-                            
-                            # Create a combined mask for all active cells (or a blank mask if no active cells)
-                            # Initialize a blank mask with the same size as the output image
-                            width, height = output_size
-                            combined_mask = np.zeros((height, width), dtype=np.uint8)
-                            
-                            # Only generate mask if there are active cells
-                            if active_cells:
-                                # Get masks with only active cells
-                                multi_instance_mask = pouch.get_cell_masks(active_only=True, time_step=time_step)
-                                cell_ids = np.unique(multi_instance_mask)
-                                
-                                for cell_id in cell_ids:
-                                    if cell_id == 0:
-                                        continue  # Skip background
-                                    # Create a binary mask for the current cell instance
-                                    instance_mask = (multi_instance_mask == cell_id).astype(np.uint8)
-                                    # Multiply by 255 to prepare the mask for saving
-                                    instance_mask = instance_mask * 255
-                                    
-                                    # Add this mask to the combined mask using bitwise OR
-                                    combined_mask = cv2.bitwise_or(combined_mask, instance_mask)
-                                    
-                                    # Explicitly delete temporary objects to free memory
-                                    del instance_mask
-                            
-                            # Save the combined mask with the same base filename as the image (including batch run ID)
-                            # Format: {sim_name}_t{time_step}_{batch_run_id}_mask_combined.png (1-bit binary for space efficiency)
-                            combined_mask_filename = f"{sim_name}_t{time_step:05d}{batch_id_suffix}_mask_combined.png"
-                            combined_mask_path = save_image(combined_mask, mask_dir, combined_mask_filename, format='png', bit_depth=1, target_size=output_size)
-                            mask_files.append(combined_mask_path)
-                            
-                            # Free memory
-                            del combined_mask
+
+                            # Process for SAM2 (creates instance masks and prompts)
+                            image_name = f"{sim_name}_t{time_step:05d}{batch_id_suffix}"
+                            sam2_results = process_batch_for_sam2(
+                                pouch=pouch,
+                                time_step=time_step,
+                                output_dir=batch_dir,
+                                image_name=image_name,
+                                dataset_split=dataset_split,
+                                save_visualization=False  # Set to True for debugging
+                            )
+
+                            if sam2_results:
+                                mask_files.append(sam2_results.get('mask_path', ''))
+                                # Log statistics
+                                if sam2_results.get('num_cells', 0) > 0:
+                                    print(f"  Generated SAM2 data: {sam2_results['num_cells']} cells, "
+                                          f"{sam2_results.get('num_negative', 0)} negative prompts")
 
                         # Explicitly delete temporary objects to free memory
                         del clean_image, processed_image

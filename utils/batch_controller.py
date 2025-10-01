@@ -193,6 +193,7 @@ class BatchGenerationController:
         config['create_csv'] = batch_params.get('create_csv', False)
         config['enable_video'] = batch_params.get('enable_video', False)
         config['defect_config'] = batch_params.get('defect_config', None)
+        config['dataset_split'] = batch_params.get('dataset_split', 'train')  # For SAM2 dataset
 
         # Determine memory threshold based on pouch size
         if 'large' in config['pouch_sizes'] or 'xlarge' in config['pouch_sizes']:
@@ -234,7 +235,8 @@ class BatchGenerationController:
             image_size=config['output_size'],
             jpeg_quality=config['jpeg_quality'],
             memory_threshold=config['memory_threshold'],
-            save_pouch=config['enable_video']
+            save_pouch=config['enable_video'],
+            dataset_split=config.get('dataset_split', 'train')
         )
 
         return results
@@ -294,7 +296,8 @@ class BatchGenerationController:
                 image_size=config['output_size'],
                 jpeg_quality=config['jpeg_quality'],
                 memory_threshold=config['memory_threshold'],
-                save_pouch=False  # Don't save pouch in multi-batch to save memory
+                save_pouch=False,  # Don't save pouch in multi-batch to save memory
+                dataset_split=config.get('dataset_split', 'train')
             )
 
             # Accumulate results

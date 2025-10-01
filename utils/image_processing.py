@@ -175,18 +175,19 @@ def apply_all_defects(image, cells_mask, config):
     return result
 
 
-def save_image(image, output_path, filename, format='png', quality=90, target_size=None, bit_depth=10):
+def save_image(image, output_path, filename, format='png', quality=90, target_size=None):
     """
     Save image to file, optionally resizing to target size.
 
+    Note: For masks, use numpy.savez_compressed() directly instead.
+
     Args:
-        image (numpy.ndarray): Image to save.
+        image (numpy.ndarray): Image to save (for visualization images only).
         output_path (str): Output directory.
         filename (str): Filename.
-        format (str): Image format, 'jpg', 'png', or 'png16' (default: 'png').
-        quality (int): JPEG quality (0-100), higher is better quality. Only used for JPEG format.
-        target_size (tuple, optional): Target size (width, height) to resize image before saving.
-        bit_depth (int): Bit depth for PNG images (8, 10, or 16). 10-bit values stored in 16-bit PNG.
+        format (str): Image format, 'jpg' or 'png' (default: 'png').
+        quality (int): JPEG quality (0-100), higher is better quality.
+        target_size (tuple, optional): Target size (width, height) to resize image.
 
     Returns:
         str: Full path to saved file.
@@ -247,35 +248,34 @@ def save_image(image, output_path, filename, format='png', quality=90, target_si
                 cv2.imwrite(file_path, cv2.cvtColor(image, cv2.COLOR_RGB2BGR),
                            [cv2.IMWRITE_JPEG_QUALITY, quality])
 
-        elif format in ['png', 'png16'] and bit_depth == 10:
-            # 10-bit grayscale stored in 16-bit PNG (with optional alpha channel)
-            # Handle grayscale+alpha (2 channels)
+        else:
+            # PNG format (10-bit grayscale in 16-bit PNG)
             if len(image.shape) == 3 and image.shape[2] == 2:
                 # Grayscale + Alpha channel
                 gray_channel = image[:, :, 0]
                 alpha_channel = image[:, :, 1]
 
-                # Scale grayscale from 8-bit to 10-bit
+                # Scale grayscale from 8-bit to 10-bit (stored in 16-bit)
                 if gray_channel.dtype == np.uint8:
                     gray_16bit = (gray_channel.astype(np.uint16) * 4)
                 else:
                     gray_16bit = np.clip(gray_channel, 0, 1023).astype(np.uint16)
 
                 # Scale alpha to 16-bit
-                alpha_16bit = (alpha_channel.astype(np.uint16) * 257)  # 255 * 257 = 65535
+                alpha_16bit = (alpha_channel.astype(np.uint16) * 257)
 
-                # Combine into 16-bit grayscale+alpha image
+                # Combine and save
                 image_16bit = np.stack([gray_16bit, alpha_16bit], axis=-1)
                 cv2.imwrite(file_path, image_16bit)
 
             elif len(image.shape) == 3 and image.shape[2] == 3:
-                # Convert RGB to grayscale
+                # RGB - convert to grayscale 10-bit
                 image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-                # Scale to 10-bit and save
                 image_16bit = (image.astype(np.uint16) * 4)
                 cv2.imwrite(file_path, image_16bit)
-            else:
-                # Single channel grayscale
+
+            elif len(image.shape) == 2 or (len(image.shape) == 3 and image.shape[2] == 1):
+                # Single channel - save as 10-bit
                 if image.dtype == np.uint8:
                     image_16bit = (image.astype(np.uint16) * 4)
                 elif image.max() <= 1.0:
@@ -284,35 +284,8 @@ def save_image(image, output_path, filename, format='png', quality=90, target_si
                     image_16bit = np.clip(image, 0, 1023).astype(np.uint16)
                 cv2.imwrite(file_path, image_16bit)
 
-        elif format in ['png', 'png16'] and bit_depth == 1:
-            # 1-bit binary PNG for masks (most space-efficient)
-            # Ensure binary values (0 or 1)
-            if image.dtype != np.uint8:
-                image = image.astype(np.uint8)
-
-            # Threshold to ensure binary (0 or 255)
-            binary_image = np.where(image > 0, 255, 0).astype(np.uint8)
-
-            # Save with maximum compression
-            cv2.imwrite(file_path, binary_image, [cv2.IMWRITE_PNG_COMPRESSION, 9])
-
-        else:
-            # Standard 8-bit PNG
-            if image.dtype != np.uint8:
-                if image.max() <= 1.0:
-                    image = (image * 255).astype(np.uint8)
-                else:
-                    image = image.astype(np.uint8)
-
-            # Check if grayscale, grayscale+alpha, or RGB
-            if len(image.shape) == 2 or (len(image.shape) == 3 and image.shape[2] == 1):
-                cv2.imwrite(file_path, image)
-            elif len(image.shape) == 3 and image.shape[2] == 2:
-                # Grayscale + Alpha (8-bit)
-                cv2.imwrite(file_path, image)
             else:
-                # RGB or RGBA
-                cv2.imwrite(file_path, cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+                raise ValueError(f"Unsupported image shape for PNG: {image.shape}")
 
         return file_path
     except Exception as e:
