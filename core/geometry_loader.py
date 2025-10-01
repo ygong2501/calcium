@@ -1,115 +1,194 @@
 """
 Geometry structure loading for calcium simulation.
+
+This module provides the GeometryLoader class for loading pre-computed
+cell geometry data (vertices, adjacency matrices, Laplacian matrices) from
+disk. The geometry files define the spatial structure of cell arrangements
+for different pouch sizes.
 """
 import os
-import numpy as np
 from pathlib import Path
+from typing import Tuple, List, Optional
+
+import numpy as np
 
 
 class GeometryLoader:
-    """Handles loading of geometry structures for simulations."""
-    
-    def __init__(self, geometry_dir=None):
+    """
+    Handles loading of cell geometry structures for simulations.
+
+    The geometry files contain pre-computed cell arrangements in different sizes:
+    - disc_vertices.npy: Cell boundary vertices
+    - disc_sizes_adj.npy: Cell adjacency matrices (which cells are neighbors)
+    - disc_sizes_laplacian.npy: Graph Laplacian matrices for diffusion
+
+    Attributes:
+        geometry_dir (str): Path to directory containing geometry files.
+        available_sizes (List[str]): List of available geometry sizes.
+    """
+
+    # Standard geometry file names
+    VERTICES_FILE = 'disc_vertices.npy'
+    ADJACENCY_FILE = 'disc_sizes_adj.npy'
+    LAPLACIAN_FILE = 'disc_sizes_laplacian.npy'
+
+    # Default sizes if files are not available
+    DEFAULT_SIZES = ['xsmall', 'small', 'medium', 'large', 'xlarge']
+
+    def __init__(self, geometry_dir: Optional[str] = None):
         """
         Initialize the geometry loader.
-        
+
         Args:
-            geometry_dir (str, optional): Directory containing geometry files.
-                If None, uses the default 'geometry' directory in the package.
+            geometry_dir: Directory containing geometry files.
+                If None, uses './geometry' relative to package root.
         """
         if geometry_dir is None:
-            # Use default location relative to this file
+            # Use default location relative to package root
             package_dir = Path(__file__).parent.parent
-            self.geometry_dir = os.path.join(package_dir, 'geometry')
+            self.geometry_dir = str(package_dir / 'geometry')
         else:
             self.geometry_dir = geometry_dir
-            
-        # Check if geometry directory exists
-        if not os.path.exists(self.geometry_dir):
-            os.makedirs(self.geometry_dir, exist_ok=True)
-            
-        self.available_sizes = self._get_available_sizes()
-    
-    def _get_available_sizes(self):
+
+        # Create geometry directory if it doesn't exist
+        os.makedirs(self.geometry_dir, exist_ok=True)
+
+        # Discover available sizes
+        self.available_sizes = self._discover_available_sizes()
+
+    def _discover_available_sizes(self) -> List[str]:
         """
-        Get list of available geometry sizes.
-        
+        Discover available geometry sizes from disk.
+
         Returns:
-            list: List of available sizes.
+            List of available size names.
         """
-        # Check what geometry files are available
-        sizes = []
+        vertices_path = os.path.join(self.geometry_dir, self.VERTICES_FILE)
+
+        if not os.path.exists(vertices_path):
+            return self.DEFAULT_SIZES.copy()
+
         try:
-            # Try to load the vertices file to extract sizes
-            vertices_file = os.path.join(self.geometry_dir, 'disc_vertices.npy')
-            if os.path.exists(vertices_file):
-                vertices = np.load(vertices_file, allow_pickle=True).item()
-                sizes = list(vertices.keys())
+            # Load vertices file to extract available sizes
+            vertices_dict = np.load(vertices_path, allow_pickle=True).item()
+            return sorted(vertices_dict.keys())
         except Exception as e:
-            print(f"Warning: Could not load geometry sizes: {e}")
-            # Default sizes if no files available
-            sizes = ['xsmall', 'small', 'medium', 'large']
-            
-        return sizes
-    
-    def load_geometry(self, size='medium'):
+            print(f"Warning: Could not load geometry sizes from {vertices_path}: {e}")
+            return self.DEFAULT_SIZES.copy()
+
+    def load_geometry(self, size: str = 'medium') -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
-        Load geometry for a specific size.
-        
+        Load geometry data for a specific pouch size.
+
         Args:
-            size (str): Size of the geometry to load.
-                Options: 'xsmall', 'small', 'medium', 'large'
-                
+            size: Geometry size to load (e.g., 'xsmall', 'small', 'medium', 'large', 'xlarge').
+
         Returns:
-            tuple: (vertices, adjacency_matrix, laplacian_matrix)
+            Tuple of (vertices, adjacency_matrix, laplacian_matrix):
+            - vertices: List of cell boundary vertices (n_cells,)
+            - adjacency_matrix: Cell adjacency matrix (n_cells, n_cells)
+            - laplacian_matrix: Graph Laplacian for diffusion (n_cells, n_cells)
+
+        Raises:
+            ValueError: If requested size is not available.
+            FileNotFoundError: If geometry files are missing.
+            RuntimeError: If geometry files are corrupted or invalid.
         """
         # Validate size
-        if size not in self.available_sizes and os.path.exists(self.geometry_dir):
-            available = ', '.join(self.available_sizes) if self.available_sizes else "none"
-            raise ValueError(f"Size '{size}' not available. Available sizes: {available}")
-        
+        if size not in self.available_sizes:
+            available_str = ', '.join(self.available_sizes) if self.available_sizes else "none"
+            raise ValueError(
+                f"Geometry size '{size}' not available. "
+                f"Available sizes: {available_str}. "
+                f"Please download geometry files from the original repository."
+            )
+
+        # Construct file paths
+        vertices_path = os.path.join(self.geometry_dir, self.VERTICES_FILE)
+        adjacency_path = os.path.join(self.geometry_dir, self.ADJACENCY_FILE)
+        laplacian_path = os.path.join(self.geometry_dir, self.LAPLACIAN_FILE)
+
+        # Check files exist
+        for path, name in [(vertices_path, 'vertices'),
+                          (adjacency_path, 'adjacency'),
+                          (laplacian_path, 'Laplacian')]:
+            if not os.path.exists(path):
+                raise FileNotFoundError(
+                    f"Geometry file not found: {path}. "
+                    f"Please download geometry files from the original repository."
+                )
+
         try:
-            # Load vertices
-            vertices_file = os.path.join(self.geometry_dir, 'disc_vertices.npy')
-            vertices = np.load(vertices_file, allow_pickle=True).item()[size]
-            
-            # Load adjacency matrix
-            adj_file = os.path.join(self.geometry_dir, 'disc_sizes_adj.npy')
-            adjacency_matrix = np.load(adj_file, allow_pickle=True).item()[size]
-            
-            # Load laplacian matrix
-            laplacian_file = os.path.join(self.geometry_dir, 'disc_sizes_laplacian.npy')
-            laplacian_matrix = np.load(laplacian_file, allow_pickle=True).item()[size]
-            
+            # Load all geometry components
+            vertices_dict = np.load(vertices_path, allow_pickle=True).item()
+            adjacency_dict = np.load(adjacency_path, allow_pickle=True).item()
+            laplacian_dict = np.load(laplacian_path, allow_pickle=True).item()
+
+            # Extract requested size
+            vertices = vertices_dict[size]
+            adjacency_matrix = adjacency_dict[size]
+            laplacian_matrix = laplacian_dict[size]
+
+            # Validate dimensions match
+            n_cells = len(vertices)
+            if adjacency_matrix.shape != (n_cells, n_cells):
+                raise RuntimeError(
+                    f"Adjacency matrix shape {adjacency_matrix.shape} "
+                    f"does not match number of cells ({n_cells})"
+                )
+            if laplacian_matrix.shape != (n_cells, n_cells):
+                raise RuntimeError(
+                    f"Laplacian matrix shape {laplacian_matrix.shape} "
+                    f"does not match number of cells ({n_cells})"
+                )
+
             return vertices, adjacency_matrix, laplacian_matrix
-            
+
+        except KeyError:
+            raise RuntimeError(
+                f"Geometry size '{size}' exists in file list but could not be loaded. "
+                f"Geometry files may be corrupted."
+            )
         except Exception as e:
             raise RuntimeError(f"Error loading geometry files: {e}")
-    
-    def extract_geometry_from_notebook(self, notebook_path, output_dir=None):
-        """
-        Extract geometry data from original notebook.
-        
-        This is a utility function to extract and save geometry data
-        from the original notebook for Windows compatibility.
-        
-        Args:
-            notebook_path (str): Path to the original notebook.
-            output_dir (str, optional): Directory to save extracted data.
-                If None, uses the default geometry directory.
-                
-        Returns:
-            bool: True if extraction succeeded, False otherwise.
-        """
-        # Implementation would depend on how the data is stored in the notebook
-        # This is a placeholder for the extraction logic
-        raise NotImplementedError("Geometry extraction not implemented")
-        
-    def get_available_sizes(self):
+
+    def get_available_sizes(self) -> List[str]:
         """
         Get list of available geometry sizes.
-        
+
         Returns:
-            list: List of available sizes.
+            Copy of available sizes list.
         """
         return self.available_sizes.copy()
+
+    def get_geometry_info(self, size: str) -> dict:
+        """
+        Get information about a specific geometry size without loading full data.
+
+        Args:
+            size: Geometry size to query.
+
+        Returns:
+            Dictionary containing geometry metadata.
+
+        Raises:
+            ValueError: If size is not available.
+        """
+        if size not in self.available_sizes:
+            raise ValueError(f"Size '{size}' not available")
+
+        try:
+            vertices_path = os.path.join(self.geometry_dir, self.VERTICES_FILE)
+            vertices_dict = np.load(vertices_path, allow_pickle=True).item()
+            vertices = vertices_dict[size]
+
+            return {
+                'size': size,
+                'n_cells': len(vertices),
+                'geometry_dir': self.geometry_dir
+            }
+        except Exception as e:
+            return {
+                'size': size,
+                'error': str(e)
+            }
